@@ -9,7 +9,7 @@ LIBERO_REPO="$SCRIPT_DIR/../../../../external_dependencies/LIBERO"
 PROJECT_REPO="$SCRIPT_DIR/../../../.."
 LIBERO_UV_ENV="$SCRIPT_DIR/libero_uv"
 
-git submodule update --init $LIBERO_REPO
+# git submodule update --init $LIBERO_REPO
 
 # python -m pip install cmake==3.18.4
 rm -rf $LIBERO_UV_ENV
