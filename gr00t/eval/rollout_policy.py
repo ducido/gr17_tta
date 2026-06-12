@@ -445,15 +445,22 @@ def create_gr00t_sim_policy(
     policy_client_port: int | None = None,
     trt_engine_path: str = "",
     trt_mode: TrtMode = TrtMode.N17_FULL_PIPELINE,
+    algo: str | None = None
 ) -> BasePolicy:
-    from gr00t.policy.gr00t_policy import Gr00tPolicy, Gr00tSimPolicyWrapper
+    from gr00t.policy.gr00t_policy import Gr00tSimPolicyWrapper
+    if algo == 'cam':
+        from gr00t.wrapper.cam.gr00t_cam import Gr00tCamPolicy
+        policy_class = Gr00tCamPolicy
+    else:
+        from gr00t.policy.gr00t_policy import Gr00tPolicy
+        policy_class = Gr00tPolicy
 
     if policy_client_host and policy_client_port:
         from gr00t.policy.server_client import PolicyClient
 
         policy = PolicyClient(host=policy_client_host, port=policy_client_port)
     else:
-        gr00t_policy = Gr00tPolicy(
+        gr00t_policy = policy_class(
             embodiment_tag=embodiment_tag,
             model_path=model_path,
             device=0,
@@ -482,6 +489,7 @@ def run_gr00t_sim_policy(
     trt_engine_path: str = "",
     trt_mode: TrtMode = TrtMode.N17_FULL_PIPELINE,
     seed: int | None = None,
+    algo: str | None = None
 ):
     # seed_everything resolves `None` via the GR00T_EVAL_SEED env var and is a
     # no-op when that is also unset, so the historical non-deterministic
@@ -517,6 +525,7 @@ def run_gr00t_sim_policy(
         policy_client_port,
         trt_engine_path=trt_engine_path,
         trt_mode=trt_mode,
+        algo=algo
     )
 
     results = run_rollout_gymnasium_policy(
@@ -574,6 +583,8 @@ class RolloutConfig:
     per-env seeds to the sim envs. If left as ``None``, falls back to the
     ``GR00T_EVAL_SEED`` env var; if that is also unset, keeps the historical
     non-deterministic behavior."""
+
+    algo: str | None = None
 
 
 if __name__ == "__main__":
