@@ -253,6 +253,242 @@ class _RobustAsyncVectorEnv(gym.vector.AsyncVectorEnv):
             infos[f"_{k}"][env_num] = True
         return infos
 
+import cv2
+import numpy as np
+from pathlib import Path
+import imageio.v2 as imageio
+
+IMAGE_TOKEN_ID = 151655
+
+
+# def _normalize(x, percentile=95, gamma=4.0):
+#     x = x.astype(np.float32)
+#     x = x - x.min()
+
+#     if x.max() < 1e-8:
+#         return np.zeros_like(x)
+
+#     vmax = np.percentile(x, percentile)
+
+#     if vmax < 1e-8:
+#         vmax = x.max()
+
+#     x = np.clip(x, 0, vmax)
+#     x = x / (vmax + 1e-8)
+#     x = np.power(x, gamma)
+
+#     return x
+
+def _normalize(x):
+    x = x.astype(np.float32)
+    x = (x - x.min()) / (x.max() - x.min())
+    x = np.sqrt(x)
+    return x
+
+def overlay_heatmap(rgb, heatmap, alpha=0.35, overlay=True):
+    heatmap = np.clip(heatmap, 0, 1)
+    heatmap_u8 = np.uint8(255 * heatmap)
+    heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
+
+    if overlay:
+        return cv2.addWeighted(rgb, 1.0 - alpha, heatmap_color, alpha, 0)
+    else:
+        return heatmap_color
+
+def extract_two_view_heatmaps(token_scores, input_ids, output_size=(256, 256)):
+    image_mask = input_ids == IMAGE_TOKEN_ID
+
+    image_scores = token_scores[image_mask]
+
+    num_img_tokens = len(image_scores)
+
+    assert num_img_tokens == 128, f"No image token found for IMAGE_TOKEN_ID={IMAGE_TOKEN_ID}"
+    assert num_img_tokens % 2 == 0, f"Expected even image token count, got {num_img_tokens}"
+
+    tokens_per_view = num_img_tokens // 2
+
+    grid_size = int(np.sqrt(tokens_per_view))
+
+    assert grid_size * grid_size == tokens_per_view, f"tokens_per_view={tokens_per_view} is not square"
+
+    front = image_scores[:tokens_per_view]
+    wrist = image_scores[tokens_per_view:]
+
+    front = front.reshape(grid_size, grid_size)
+    wrist = wrist.reshape(grid_size, grid_size)
+
+    # flat = front.reshape(-1)
+
+    # print(
+    #     "min=", flat.min(),
+    #     "max=", flat.max(),
+    #     "mean=", flat.mean(),
+    #     "std=", flat.std(),
+    # )
+
+    # print(
+    #     "top10=",
+    #     np.sort(flat)[-10:]
+    # )
+
+    # print(
+    #     "bottom10=",
+    #     np.sort(flat)[:10]
+    # )
+    front = _normalize(front)
+    wrist = _normalize(wrist)
+
+    front = cv2.resize(front, output_size, interpolation=cv2.INTER_CUBIC)
+    wrist = cv2.resize(wrist, output_size, interpolation=cv2.INTER_CUBIC)
+    return front, wrist
+
+
+def build_compare_frame(
+    sensitivity_scores,
+    importance_scores,
+    input_ids,
+    rgb_front,
+    rgb_wrist,
+    env_step,
+    denoise_step,
+):
+    sens_front, sens_wrist = extract_two_view_heatmaps(sensitivity_scores, input_ids)
+    imp_front, imp_wrist = extract_two_view_heatmaps(importance_scores, input_ids)
+
+    overlay=True
+    sens_front_overlay = overlay_heatmap(rgb_front, sens_front, alpha=0.35, overlay=overlay)
+    sens_wrist_overlay = overlay_heatmap(rgb_wrist, sens_wrist, alpha=0.35, overlay=overlay)
+
+    imp_front_overlay = overlay_heatmap(rgb_front, imp_front, alpha=0.35, overlay=overlay)
+    imp_wrist_overlay = overlay_heatmap(rgb_wrist, imp_wrist, alpha=0.35, overlay=overlay)
+
+    row1 = np.concatenate([sens_front_overlay, imp_front_overlay], axis=1)
+    row2 = np.concatenate([sens_wrist_overlay, imp_wrist_overlay], axis=1)
+
+    frame = np.concatenate([row1, row2], axis=0)
+
+    cv2.putText(frame, f"env={env_step} denoise={denoise_step}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    cv2.putText(frame, "Sensitivity Front", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(frame, "Token Importance Front", (280, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+    cv2.putText(frame, "Sensitivity Wrist", (10, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(frame, "Token Importance Wrist", (280, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+    return frame
+
+
+def save_cam_video(ep_cam_data, save_dir, episode_id):
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    assert len(ep_cam_data) > 0
+
+    num_denoise_steps = len(ep_cam_data[0]["cam_data"])
+
+    compare_writers = {}
+
+    fps = 4
+
+    for denoise_step in range(num_denoise_steps):
+        compare_path = save_dir / f"episode_{episode_id:04d}_compare_denoise_{denoise_step}.mp4"
+        if compare_path.exists():
+            compare_path.unlink()
+        
+        compare_writers[denoise_step] = imageio.get_writer(str(compare_path), fps=fps, codec="libx264", format="FFMPEG")
+
+    try:
+        for env_step, step_data in enumerate(ep_cam_data):
+            ids = step_data["input_ids"]
+
+            if ids.ndim == 2:
+                assert ids.shape[0] == 1
+                ids = ids[0]
+
+            ids = np.asarray(ids)
+
+            rgb_front = step_data["image"]
+            rgb_wrist = step_data["wrist_image"]
+
+            while rgb_front.ndim > 3:
+                rgb_front = rgb_front[0]
+
+            while rgb_wrist.ndim > 3:
+                rgb_wrist = rgb_wrist[0]
+
+            rgb_front = rgb_front.astype(np.uint8)
+            rgb_wrist = rgb_wrist.astype(np.uint8)
+
+            cam_data = step_data["cam_data"]
+
+            assert len(cam_data) == num_denoise_steps
+
+            for denoise_data in cam_data:
+                denoise_step = denoise_data["denoise_step"]
+
+                frame = build_compare_frame(
+                    denoise_data["sensitivity"],
+                    denoise_data["token_importance"],
+                    ids,
+                    rgb_front,
+                    rgb_wrist,
+                    env_step,
+                    denoise_step,
+                )
+
+                compare_writers[denoise_step].append_data(frame)
+
+    finally:
+        for writer in compare_writers.values():
+            writer.close()
+
+    print(f"[CAM] saved episode {episode_id} with {num_denoise_steps} denoise videos")
+    
+# def save_cam_video(ep_cam_data, save_dir, episode_id):
+
+
+#     print(len(ep_cam_data)) # 35
+#     print(ep_cam_data[0].keys()) # dict_keys(['input_ids', 'cam_data'])
+#     print(len(ep_cam_data[0]["cam_data"])) # 4 denoising steps
+#     print(ep_cam_data[0]["cam_data"][0].keys()) # dict_keys(['denoise_step', 't_discretized', 'sensitivity', 'token_importance', 'pred_velocity'])
+#     sample = ep_cam_data[0]["cam_data"][0]
+#     for key in sample.keys():
+#         if isinstance(sample[key], np.ndarray):
+#             print(key, sample[key].shape)
+#     '''
+#     sensitivity (149,)
+#     token_importance (149,)
+#     pred_velocity (40, 132)
+#     '''
+#     input_ids = ep_cam_data[0]["input_ids"]
+#     # print(input_ids.shape) # (1,149)
+#     '''
+#     input_ids array([[151644,    872,    198, 151652, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151653, 151652, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151655, 151655,
+#             151655, 151655, 151655, 151655, 151655, 151655, 151653,    628,
+#             2176,    279,  27790,  19174,    323,    279,  41020,  19187,
+#             304,    279,  14024, 151645,    198]])
+#     '''
+#     input_ids = input_ids[0]
+#     image_mask = (input_ids == 151655)
+
+#     image_token_indices = np.where(input_ids == 151655)[0]
+#     print(image_token_indices)
+
 
 def run_rollout_gymnasium_policy(
     env_name: str,
@@ -261,6 +497,7 @@ def run_rollout_gymnasium_policy(
     n_episodes: int = 10,
     n_envs: int = 1,
     seed: int | None = None,
+    save_cam_video_dir: str | None = None,
 ) -> Any:
     """Run policy rollouts in parallel environments.
 
@@ -323,8 +560,17 @@ def run_rollout_gymnasium_policy(
     i = 0
 
     pbar = tqdm(total=n_episodes, desc="Episodes")
+    episode_cam_data = []
+
     while completed_episodes < n_episodes:
-        actions, _ = policy.get_action(observations)
+        actions, info = policy.get_action(observations)
+        # cam_data = info['cam_data']
+        # len(cam_data) = 4
+        # cam_data[0].keys() dict_keys(['denoise_step', 't_discretized', 'sensitivity', 'token_importance', 'pred_velocity'])
+        input_ids = info["input_ids"]
+        cam_data = info["cam_data"]
+        episode_cam_data.append({"input_ids": input_ids, "cam_data": cam_data, 'image': observations['video.image'], 'wrist_image': observations['video.wrist_image']})
+
         next_obs, rewards, terminations, truncations, env_infos = env.step(actions)
         # NOTE (FY): Currently we don't properly handle policy reset. For now, our policy are stateless,
         # but in the future if we need policy to be stateful, we need to detect env reset and call policy.reset()
@@ -396,6 +642,14 @@ def run_rollout_gymnasium_policy(
                 # static type silently flips int <-> float across iterations.
                 current_rewards[env_idx] = 0.0
                 current_lengths[env_idx] = 0
+            
+                ### Save cam
+                save_cam_video(
+                    episode_cam_data,
+                    save_dir=save_cam_video_dir,
+                    episode_id=completed_episodes,
+                )
+                episode_cam_data = []
         observations = next_obs
     pbar.close()
 
@@ -448,19 +702,14 @@ def create_gr00t_sim_policy(
     algo: str | None = None
 ) -> BasePolicy:
     from gr00t.policy.gr00t_policy import Gr00tSimPolicyWrapper
-    if algo == 'cam':
-        from gr00t.wrapper.cam.gr00t_cam import Gr00tCamPolicy
-        policy_class = Gr00tCamPolicy
-    else:
-        from gr00t.policy.gr00t_policy import Gr00tPolicy
-        policy_class = Gr00tPolicy
+    from gr00t.policy.gr00t_policy import Gr00tPolicy
 
     if policy_client_host and policy_client_port:
         from gr00t.policy.server_client import PolicyClient
 
         policy = PolicyClient(host=policy_client_host, port=policy_client_port)
     else:
-        gr00t_policy = policy_class(
+        gr00t_policy = Gr00tPolicy(
             embodiment_tag=embodiment_tag,
             model_path=model_path,
             device=0,
@@ -489,7 +738,8 @@ def run_gr00t_sim_policy(
     trt_engine_path: str = "",
     trt_mode: TrtMode = TrtMode.N17_FULL_PIPELINE,
     seed: int | None = None,
-    algo: str | None = None
+    algo: str | None = None,
+    save_cam_video_dir: str | None = None,
 ):
     # seed_everything resolves `None` via the GR00T_EVAL_SEED env var and is a
     # no-op when that is also unset, so the historical non-deterministic
@@ -535,6 +785,7 @@ def run_gr00t_sim_policy(
         n_episodes=n_episodes,
         n_envs=n_envs,
         seed=seed,
+        save_cam_video_dir=save_cam_video_dir
     )
     print("Video saved to: ", wrapper_configs.video.video_dir)
     return results
@@ -585,6 +836,7 @@ class RolloutConfig:
     non-deterministic behavior."""
 
     algo: str | None = None
+    save_cam_video_dir: str | None = None
 
 
 if __name__ == "__main__":
@@ -613,6 +865,8 @@ if __name__ == "__main__":
         trt_engine_path=args.trt_engine_path,
         trt_mode=args.trt_mode,
         seed=args.seed,
+        algo=args.algo,
+        save_cam_video_dir=args.save_cam_video_dir,
     )
     print("results: ", results)
     print("success rate: ", np.mean(results[1]))

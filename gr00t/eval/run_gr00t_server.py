@@ -19,10 +19,11 @@ import json
 import os
 from pathlib import Path
 import sys
+import types
+
 
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.data.types import ModalityConfig
-from gr00t.policy.gr00t_policy import Gr00tPolicy
 from gr00t.policy.replay_policy import ReplayPolicy
 from gr00t.policy.server_client import PolicyServer
 import tyro
@@ -68,6 +69,9 @@ class ServerConfig:
     use_sim_policy_wrapper: bool = False
     """Whether to use the sim policy wrapper"""
 
+    algo: str | None = None
+    """Algorithm to use"""
+
 
 def main(config: ServerConfig):
     config.embodiment_tag = EmbodimentTag.resolve(config.embodiment_tag)
@@ -83,12 +87,26 @@ def main(config: ServerConfig):
         # check if the model path exists
         if config.model_path.startswith("/") and not os.path.exists(config.model_path):
             raise FileNotFoundError(f"Model path {config.model_path} does not exist")
-        policy = Gr00tPolicy(
-            embodiment_tag=config.embodiment_tag,
-            model_path=config.model_path,
-            device=config.device,
-            strict=config.strict,
-        )
+
+        if config.algo == 'cam':
+            from gr00t.wrapper.cam.gr00t_cam import Gr00tCamPolicy, Gr00tN1d7_CAM, Gr00tN1d7_CAM_ActionHead
+            policy = Gr00tCamPolicy(
+                embodiment_tag=config.embodiment_tag,
+                model_path=config.model_path,
+                device=config.device,
+            )
+            policy.model.get_action = types.MethodType(Gr00tN1d7_CAM.get_action, policy.model)
+            policy.model.action_head.get_action = types.MethodType(Gr00tN1d7_CAM_ActionHead.get_action, policy.model.action_head)
+            policy.model.action_head.get_action_with_features = types.MethodType(Gr00tN1d7_CAM_ActionHead.get_action_with_features, policy.model.action_head)
+
+        else:
+            from gr00t.policy.gr00t_policy import Gr00tPolicy
+            policy = Gr00tPolicy(
+                embodiment_tag=config.embodiment_tag,
+                model_path=config.model_path,
+                device=config.device,
+                strict=config.strict,
+            )
     elif config.dataset_path is not None:
         if config.execution_horizon is None:
             raise ValueError(
