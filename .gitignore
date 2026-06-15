@@ -172,3 +172,4 @@ offline_open_loop_eval_plots/
 external_dependencies/
 CP
 eval_logs
+debug

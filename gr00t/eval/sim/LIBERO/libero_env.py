@@ -31,9 +31,9 @@ from libero.libero import benchmark
 
 
 os.environ.setdefault("MUJOCO_GL", "egl")
-os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
 
-from libero.libero.envs import OffScreenRenderEnv
+from libero.libero.envs import OffScreenRenderEnv, SegmentationRenderEnv
 from libero.libero.utils import get_libero_path
 import numpy as np
 
@@ -220,46 +220,64 @@ if __name__ == "__main__":
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite_name = "libero_10"  # can also choose libero_spatial, libero_object, etc.
     task_suite = benchmark_dict[task_suite_name]()
-    for key in [
-        "libero_10",
-        "libero_spatial",
-        "libero_object",
-        "libero_goal",
-        "libero_90",
-    ]:
-        for task_name in benchmark_dict[key]().get_task_names():
-            print(f"- {key}/{task_name}")
+    # for key in [
+    #     "libero_10",
+    #     "libero_spatial",
+    #     "libero_object",
+    #     "libero_goal",
+    #     "libero_90",
+    # ]:
+    #     for task_name in benchmark_dict[key]().get_task_names():
+    #         print(f"- {key}/{task_name}")
 
     # retrieve a specific task
-    task_id = 0
-    task = task_suite.get_task(task_id)
-    task_name = task.name
-    task_description = task.language
-    task_bddl_file = os.path.join(
-        get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
-    )
-    print(
-        f"[info] retrieving task {task_id} from suite {task_suite_name}, the "
-        + f"language instruction is {task_description}, and the bddl file is {task_bddl_file}"
-    )
+    for task_id in range(10):
+        task = task_suite.get_task(task_id)
+        task_name = task.name
+        task_description = task.language
+        task_bddl_file = os.path.join(
+            get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
+        )
+        print(
+            f"[info] retrieving task {task_id} from suite {task_suite_name}, the "
+            + f"language instruction is {task_description}, and the bddl file is {task_bddl_file}"
+        )
 
-    # step over the environment
-    env_args = {
-        "bddl_file_name": task_bddl_file,
-        "camera_heights": 128,
-        "camera_widths": 128,
-    }
-    env = OffScreenRenderEnv(**env_args)
-    env.seed(0)
-    env.reset()
-    init_states = task_suite.get_task_init_states(
-        task_id
-    )  # for benchmarking purpose, we fix the a set of initial states
-    init_state_id = 0
-    env.set_init_state(init_states[init_state_id])
+        # step over the environment
+        env_args = {
+            "bddl_file_name": task_bddl_file,
+            "camera_heights": 128,
+            "camera_widths": 128,
+        }
+        env = SegmentationRenderEnv(**env_args)
+        env.seed(0)
+        env.reset()
+        init_states = task_suite.get_task_init_states(
+            task_id
+        )  # for benchmarking purpose, we fix the a set of initial states
+        init_state_id = 0
+        env.set_init_state(init_states[init_state_id])
 
-    dummy_action = [0.0] * 7
-    for step in range(10):
-        obs, reward, done, info = env.step(dummy_action)
-        print("step", step, "obs", obs.keys())
-    env.close()
+        dummy_action = [0.0] * 7
+        for step in range(1):
+            obs, reward, done, info = env.step(dummy_action)
+            # print("step", step, "obs", obs.keys())
+
+        # for key in obs.keys():
+        #     if 'segmentation' in key:
+        #         print(f"{key}: {obs[key].shape}")
+
+        mask_img = env.get_segmentation_of_interest(obs['agentview_segmentation_instance'])
+        mask_wrist = env.get_segmentation_of_interest(obs['robot0_eye_in_hand_segmentation_instance'])
+        # mask_img[mask_img == -1] = 0
+        # mask_wrist[mask_wrist == -1] = 0
+
+        print(f"mask_img: {mask_img.shape}")
+        print(f"mask_wrist: {mask_wrist.shape}")
+
+        # save
+        import matplotlib.pyplot as plt
+        plt.imsave(f"debug/mask_img_{task_id}.png", mask_img.squeeze(), cmap="gray")
+        plt.imsave(f"debug/mask_wrist_{task_id}.png", mask_wrist.squeeze(), cmap="gray")
+        
+        env.close()

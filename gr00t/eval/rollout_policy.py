@@ -184,6 +184,7 @@ def create_eval_env(
     """
 
     env = get_gym_env(env_name, env_idx, total_n_envs)
+    breakpoint()
     if wrapper_configs.video.video_dir is not None:
         from gr00t.eval.sim.wrapper.video_recording_wrapper import (
             VideoRecorder,
@@ -253,10 +254,11 @@ class _RobustAsyncVectorEnv(gym.vector.AsyncVectorEnv):
             infos[f"_{k}"][env_num] = True
         return infos
 
-import cv2
 import numpy as np
 from pathlib import Path
 import imageio.v2 as imageio
+from PIL import Image, ImageDraw
+from matplotlib import colormaps
 
 IMAGE_TOKEN_ID = 151655
 
@@ -279,21 +281,30 @@ IMAGE_TOKEN_ID = 151655
 
 #     return x
 
+
+
 def _normalize(x):
     x = x.astype(np.float32)
-    x = (x - x.min()) / (x.max() - x.min())
+    x = (x - x.min()) / (x.max() - x.min() + 1e-8)
     x = np.sqrt(x)
     return x
 
-def overlay_heatmap(rgb, heatmap, alpha=0.35, overlay=True):
-    heatmap = np.clip(heatmap, 0, 1)
-    heatmap_u8 = np.uint8(255 * heatmap)
-    heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
 
-    if overlay:
-        return cv2.addWeighted(rgb, 1.0 - alpha, heatmap_color, alpha, 0)
-    else:
+def resize_nearest(x, output_size):
+    return np.asarray(Image.fromarray(x.astype(np.float32), mode="F").resize(output_size, Image.Resampling.BILINEAR))
+
+
+def apply_jet_colormap(heatmap):
+    heatmap = np.clip(heatmap, 0, 1)
+    return (255 * colormaps["jet"](heatmap)[..., :3]).astype(np.uint8)
+
+
+def overlay_heatmap(rgb, heatmap, alpha=0.35, overlay=True):
+    heatmap_color = apply_jet_colormap(heatmap)
+    if not overlay:
         return heatmap_color
+    return np.clip((1.0 - alpha) * rgb.astype(np.float32) + alpha * heatmap_color.astype(np.float32), 0, 255).astype(np.uint8)
+
 
 def extract_two_view_heatmaps(token_scores, input_ids, output_size=(256, 256)):
     image_mask = input_ids == IMAGE_TOKEN_ID
@@ -306,41 +317,24 @@ def extract_two_view_heatmaps(token_scores, input_ids, output_size=(256, 256)):
     assert num_img_tokens % 2 == 0, f"Expected even image token count, got {num_img_tokens}"
 
     tokens_per_view = num_img_tokens // 2
-
     grid_size = int(np.sqrt(tokens_per_view))
 
     assert grid_size * grid_size == tokens_per_view, f"tokens_per_view={tokens_per_view} is not square"
 
-    front = image_scores[:tokens_per_view]
-    wrist = image_scores[tokens_per_view:]
+    front = image_scores[:tokens_per_view].reshape(grid_size, grid_size)
+    wrist = image_scores[tokens_per_view:].reshape(grid_size, grid_size)
 
-    front = front.reshape(grid_size, grid_size)
-    wrist = wrist.reshape(grid_size, grid_size)
+    front = resize_nearest(_normalize(front), output_size)
+    wrist = resize_nearest(_normalize(wrist), output_size)
 
-    # flat = front.reshape(-1)
-
-    # print(
-    #     "min=", flat.min(),
-    #     "max=", flat.max(),
-    #     "mean=", flat.mean(),
-    #     "std=", flat.std(),
-    # )
-
-    # print(
-    #     "top10=",
-    #     np.sort(flat)[-10:]
-    # )
-
-    # print(
-    #     "bottom10=",
-    #     np.sort(flat)[:10]
-    # )
-    front = _normalize(front)
-    wrist = _normalize(wrist)
-
-    front = cv2.resize(front, output_size, interpolation=cv2.INTER_CUBIC)
-    wrist = cv2.resize(wrist, output_size, interpolation=cv2.INTER_CUBIC)
     return front, wrist
+
+
+def put_text(frame, text, xy):
+    img = Image.fromarray(frame)
+    draw = ImageDraw.Draw(img)
+    draw.text(xy, text, fill=(255, 255, 255))
+    return np.asarray(img)
 
 
 def build_compare_frame(
@@ -355,7 +349,8 @@ def build_compare_frame(
     sens_front, sens_wrist = extract_two_view_heatmaps(sensitivity_scores, input_ids)
     imp_front, imp_wrist = extract_two_view_heatmaps(importance_scores, input_ids)
 
-    overlay=True
+    overlay = True
+
     sens_front_overlay = overlay_heatmap(rgb_front, sens_front, alpha=0.35, overlay=overlay)
     sens_wrist_overlay = overlay_heatmap(rgb_wrist, sens_wrist, alpha=0.35, overlay=overlay)
 
@@ -367,13 +362,11 @@ def build_compare_frame(
 
     frame = np.concatenate([row1, row2], axis=0)
 
-    cv2.putText(frame, f"env={env_step} denoise={denoise_step}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-    cv2.putText(frame, "Sensitivity Front", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    cv2.putText(frame, "Token Importance Front", (280, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-    cv2.putText(frame, "Sensitivity Wrist", (10, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    cv2.putText(frame, "Token Importance Wrist", (280, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    frame = put_text(frame, f"env={env_step} denoise={denoise_step}", (10, 25))
+    frame = put_text(frame, "Sensitivity Front", (10, 55))
+    frame = put_text(frame, "Token Importance Front", (280, 55))
+    frame = put_text(frame, "Sensitivity Wrist", (10, 310))
+    frame = put_text(frame, "Token Importance Wrist", (280, 310))
 
     return frame
 
@@ -396,7 +389,6 @@ def save_cam_video(ep_cam_data, save_dir, episode_id):
             compare_path.unlink()
         
         compare_writers[denoise_step] = imageio.get_writer(str(compare_path), fps=fps, codec="libx264", format="FFMPEG")
-
     try:
         for env_step, step_data in enumerate(ep_cam_data):
             ids = step_data["input_ids"]
@@ -409,12 +401,14 @@ def save_cam_video(ep_cam_data, save_dir, episode_id):
 
             rgb_front = step_data["image"]
             rgb_wrist = step_data["wrist_image"]
+            # breakpoint()
 
             while rgb_front.ndim > 3:
                 rgb_front = rgb_front[0]
 
             while rgb_wrist.ndim > 3:
                 rgb_wrist = rgb_wrist[0]
+
 
             rgb_front = rgb_front.astype(np.uint8)
             rgb_wrist = rgb_wrist.astype(np.uint8)

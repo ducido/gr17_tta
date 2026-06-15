@@ -85,7 +85,7 @@ class Gr00tN1d7_CAM(Gr00tN1d7):
         # Forward through backbone
         backbone_outputs = self.backbone(backbone_inputs)
 
-        action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, options)
+        action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, input_ids=backbone_inputs['input_ids'], options=options)
         
         action_outputs.update(input_ids=backbone_inputs['input_ids'].detach().cpu().numpy())
 
@@ -100,6 +100,7 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
         embodiment_id: torch.Tensor,
         backbone_output: BatchFeature,
         action_input: BatchFeature,
+        input_ids: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
     ) -> BatchFeature:
         """
@@ -214,6 +215,11 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             sensitivity = grads.norm(dim=-1)
             token_importance = torch.relu((grads * vl_embeds).sum(-1))
 
+            # sensitivity, token_importance = create_dummy_heatmaps(
+            #     input_ids=input_ids,
+            #     device=vl_embeds.device,
+            #     image_token_id=151655,
+            # )
             cam_record = {
                 "denoise_step": t,
                 "t_discretized": int(t_discretized),
@@ -246,6 +252,7 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
         self,
         backbone_output: BatchFeature,
         action_input: BatchFeature,
+        input_ids: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
     ) -> BatchFeature:
         """
@@ -271,6 +278,7 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             embodiment_id=action_input.embodiment_id,
             backbone_output=backbone_output,
             action_input=action_input,
+            input_ids=input_ids,
             options=options,
         )
 
@@ -297,3 +305,126 @@ def _rec_to_dtype(x: Any, dtype: torch.dtype) -> Any:
         return [_rec_to_dtype(v, dtype) for v in x]
     else:
         return x
+
+def create_dummy_heatmaps(
+    input_ids,
+    device,
+    image_token_id,
+):
+    """
+    Create dummy heatmaps for visualization debugging.
+
+    Args:
+        input_ids: [B, N]
+        device: torch device
+        image_token_id: IMAGE_TOKEN_ID
+
+    Returns:
+        sensitivity: [B, N]
+        token_importance: [B, N]
+    """
+
+    batch_size, seq_len = input_ids.shape
+
+    sensitivity = torch.zeros(
+        (batch_size, seq_len),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    token_importance = torch.zeros(
+        (batch_size, seq_len),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    image_mask = input_ids[0] == image_token_id
+
+    num_img_tokens = int(image_mask.sum().item())
+
+    assert num_img_tokens == 128, (
+        f"Expected 128 image tokens, got {num_img_tokens}"
+    )
+
+    tokens_per_view = num_img_tokens // 2
+
+    grid_size = int(np.sqrt(tokens_per_view))
+
+    assert grid_size * grid_size == tokens_per_view, (
+        f"tokens_per_view={tokens_per_view} is not square"
+    )
+
+    # ------------------------------------------------------------------
+    # Sensitivity: large '+' pattern
+    # ------------------------------------------------------------------
+
+    front_sensitivity = torch.zeros(
+        (grid_size, grid_size),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    wrist_sensitivity = torch.zeros(
+        (grid_size, grid_size),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    center = grid_size // 2
+
+    # front_sensitivity[:, center - 1:center + 1] = 1.0
+    # front_sensitivity[center - 1:center + 1, :] = 1.0
+    front_sensitivity[0,0] = 1.0
+
+    # wrist_sensitivity[:, center - 1:center + 1] = 1.0
+    # wrist_sensitivity[center - 1:center + 1, :] = 1.0
+    wrist_sensitivity[0,-1] = 1.0
+
+    # ------------------------------------------------------------------
+    # Token importance: large 'X' pattern
+    # ------------------------------------------------------------------
+
+    front_importance = torch.zeros(
+        (grid_size, grid_size),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    wrist_importance = torch.zeros(
+        (grid_size, grid_size),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    # for i in range(grid_size):
+    #     front_importance[i, i] = 1.0
+    #     front_importance[i, grid_size - 1 - i] = 1.0
+
+    #     wrist_importance[i, i] = 1.0
+    #     wrist_importance[i, grid_size - 1 - i] = 1.0
+    front_importance[-1,0] = 1.0
+    wrist_importance[-1,-1] = 1.0
+
+    sensitivity_img = torch.cat(
+        [
+            front_sensitivity.reshape(-1),
+            wrist_sensitivity.reshape(-1),
+        ],
+        dim=0,
+    )
+
+    token_importance_img = torch.cat(
+        [
+            front_importance.reshape(-1),
+            wrist_importance.reshape(-1),
+        ],
+        dim=0,
+    )
+
+    sensitivity[:, image_mask] = sensitivity_img.unsqueeze(0)
+
+    token_importance[:, image_mask] = (
+        token_importance_img.unsqueeze(0)
+    )
+
+    return sensitivity, token_importance
