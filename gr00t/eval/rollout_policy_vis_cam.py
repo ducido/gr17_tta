@@ -126,7 +126,7 @@ def get_libero_env_fn(
     env_name: str,
 ):
     def env_fn():
-        from gr00t.eval.sim.LIBERO.libero_env import register_libero_envs
+        from gr00t.eval.sim.LIBERO.libero_env_seg import register_libero_envs
 
         register_libero_envs()
         return gym.make(env_name)
@@ -184,7 +184,6 @@ def create_eval_env(
     """
 
     env = get_gym_env(env_name, env_idx, total_n_envs)
-    breakpoint()
     if wrapper_configs.video.video_dir is not None:
         from gr00t.eval.sim.wrapper.video_recording_wrapper import (
             VideoRecorder,
@@ -552,12 +551,12 @@ def run_rollout_gymnasium_policy(
         observations, _ = env.reset()
     policy.reset()
     i = 0
-
     pbar = tqdm(total=n_episodes, desc="Episodes")
     episode_cam_data = []
 
     while completed_episodes < n_episodes:
-        actions, info = policy.get_action(observations)
+        options = {'image_ooi': observations['image_ooi'], 'wrist_image_ooi': observations['wrist_image_ooi']}
+        actions, info = policy.get_action(observations, options=options)
         # cam_data = info['cam_data']
         # len(cam_data) = 4
         # cam_data[0].keys() dict_keys(['denoise_step', 't_discretized', 'sensitivity', 'token_importance', 'pred_velocity'])

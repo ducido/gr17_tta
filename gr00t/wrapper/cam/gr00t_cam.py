@@ -50,6 +50,7 @@ class Gr00tCamPolicy(Gr00tPolicy):
 
         # Step 4: Run model inference to predict actions
         # with torch.inference_mode():
+        collated_inputs.update(options=options)
         model_pred = self.model.get_action(**collated_inputs)
         normalized_action = model_pred["action_pred"].detach().float()
 
@@ -215,11 +216,30 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             sensitivity = grads.norm(dim=-1)
             token_importance = torch.relu((grads * vl_embeds).sum(-1))
 
+            def process_ooi(options):
+                new_options = {}
+                for k, v in options.items():
+                    v = torch.tensor(v, dtype=torch.float32)
+                    v = v.squeeze(dim=[1,-1]) # v has shape (1, 256,256)
+                    # resize to (1,8,8)
+                    # v = torch.nn.functional.interpolate(v.unsqueeze(0), size=(8, 8), mode='bilinear', align_corners=False)
+                    v = torch.nn.functional.adaptive_avg_pool2d(v.unsqueeze(0), (8, 8))
+                    new_options[k] = v.squeeze(0).view(1, -1)
+                return new_options
+
+            new_options = process_ooi(options)
+
             # sensitivity, token_importance = create_dummy_heatmaps(
             #     input_ids=input_ids,
             #     device=vl_embeds.device,
             #     image_token_id=151655,
             # )
+            sensitivity, token_importance = create_heatmaps_by_masks(
+                input_ids=input_ids,
+                device=vl_embeds.device,
+                image_token_id=151655,
+                options=new_options,
+            )
             cam_record = {
                 "denoise_step": t,
                 "t_discretized": int(t_discretized),
@@ -357,7 +377,6 @@ def create_dummy_heatmaps(
     # ------------------------------------------------------------------
     # Sensitivity: large '+' pattern
     # ------------------------------------------------------------------
-
     front_sensitivity = torch.zeros(
         (grid_size, grid_size),
         dtype=torch.float32,
@@ -383,7 +402,6 @@ def create_dummy_heatmaps(
     # ------------------------------------------------------------------
     # Token importance: large 'X' pattern
     # ------------------------------------------------------------------
-
     front_importance = torch.zeros(
         (grid_size, grid_size),
         dtype=torch.float32,
@@ -426,5 +444,76 @@ def create_dummy_heatmaps(
     token_importance[:, image_mask] = (
         token_importance_img.unsqueeze(0)
     )
+
+    return sensitivity, token_importance
+
+
+def create_heatmaps_by_masks(
+    input_ids,
+    device,
+    image_token_id,
+    options,
+):
+    """
+    Create dummy heatmaps for visualization debugging.
+
+    Args:
+        input_ids: [B, N]
+        device: torch device
+        image_token_id: IMAGE_TOKEN_ID
+
+    Returns:
+        sensitivity: [B, N]
+        token_importance: [B, N]
+    """
+
+    batch_size, seq_len = input_ids.shape
+
+    sensitivity = torch.zeros(
+        (batch_size, seq_len),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    token_importance = torch.zeros(
+        (batch_size, seq_len),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    image_mask = input_ids[0] == image_token_id
+
+    num_img_tokens = int(image_mask.sum().item())
+
+    assert num_img_tokens == 128, (
+        f"Expected 128 image tokens, got {num_img_tokens}"
+    )
+
+    tokens_per_view = num_img_tokens // 2
+
+    grid_size = int(np.sqrt(tokens_per_view))
+
+    assert grid_size * grid_size == tokens_per_view, (
+        f"tokens_per_view={tokens_per_view} is not square"
+    )
+
+    sensitivity_img = torch.cat(
+        [
+            options['image_ooi'],
+            options['wrist_image_ooi'],
+        ],
+        dim=1,
+    )
+
+    token_importance_img = torch.cat(
+        [
+            options['image_ooi'],
+            options['wrist_image_ooi'],
+        ],
+        dim=1,
+    )
+
+    sensitivity[:, image_mask] = sensitivity_img.to(dtype=sensitivity.dtype, device=sensitivity.device)
+    token_importance[:, image_mask] = token_importance_img.to(dtype=token_importance.dtype, device=token_importance.device)
 
     return sensitivity, token_importance
