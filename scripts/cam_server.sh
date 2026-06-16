@@ -1,3 +1,4 @@
+export GR00T_DIT_SDPA_MODE=math
 
 TAG=$1
 PORT=$2

@@ -95,10 +95,17 @@ def main(config: ServerConfig):
                 model_path=config.model_path,
                 device=config.device,
             )
+            policy.reset = types.MethodType(Gr00tCamPolicy.reset, policy)
+
             policy.model.get_action = types.MethodType(Gr00tN1d7_CAM.get_action, policy.model)
+
+            policy.model.action_head.init_optimizer_and_state = types.MethodType(Gr00tN1d7_CAM_ActionHead.init_optimizer_and_state, policy.model.action_head)
+            policy.model.action_head.reset = types.MethodType(Gr00tN1d7_CAM_ActionHead.reset, policy.model.action_head)
             policy.model.action_head.get_action = types.MethodType(Gr00tN1d7_CAM_ActionHead.get_action, policy.model.action_head)
             policy.model.action_head.get_action_with_features = types.MethodType(Gr00tN1d7_CAM_ActionHead.get_action_with_features, policy.model.action_head)
+            policy.model.action_head.denoising_step = types.MethodType(Gr00tN1d7_CAM_ActionHead.denoising_step, policy.model.action_head)
 
+            policy.model.action_head.init_optimizer_and_state()
         else:
             from gr00t.policy.gr00t_policy import Gr00tPolicy
             policy = Gr00tPolicy(

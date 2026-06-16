@@ -490,7 +490,7 @@ def run_rollout_gymnasium_policy(
     n_episodes: int = 10,
     n_envs: int = 1,
     seed: int | None = None,
-    save_cam_video_dir: str | None = None,
+    args: None = None,
 ) -> Any:
     """Run policy rollouts in parallel environments.
 
@@ -554,8 +554,15 @@ def run_rollout_gymnasium_policy(
     pbar = tqdm(total=n_episodes, desc="Episodes")
     episode_cam_data = []
 
+    num_step_tt_in_traj = args.num_step_tt_in_traj
     while completed_episodes < n_episodes:
-        options = {'image_ooi': observations['image_ooi'], 'wrist_image_ooi': observations['wrist_image_ooi']}
+        num_step_tt_in_traj = num_step_tt_in_traj - 1
+        options = {
+            'image_ooi': observations['image_ooi'], 
+            'wrist_image_ooi': observations['wrist_image_ooi'], 
+            'tt_update': args.tt_update,
+            'num_step_tt_in_traj': num_step_tt_in_traj
+        }
         actions, info = policy.get_action(observations, options=options)
         # cam_data = info['cam_data']
         # len(cam_data) = 4
@@ -639,10 +646,15 @@ def run_rollout_gymnasium_policy(
                 ### Save cam
                 save_cam_video(
                     episode_cam_data,
-                    save_dir=save_cam_video_dir,
+                    save_dir=args.save_cam_video_dir,
                     episode_id=completed_episodes,
                 )
                 episode_cam_data = []
+
+                ### Reset policy
+                policy.reset()
+                num_step_tt_in_traj = args.num_step_tt_in_traj
+                
         observations = next_obs
     pbar.close()
 
@@ -731,8 +743,7 @@ def run_gr00t_sim_policy(
     trt_engine_path: str = "",
     trt_mode: TrtMode = TrtMode.N17_FULL_PIPELINE,
     seed: int | None = None,
-    algo: str | None = None,
-    save_cam_video_dir: str | None = None,
+    args: None = None,
 ):
     # seed_everything resolves `None` via the GR00T_EVAL_SEED env var and is a
     # no-op when that is also unset, so the historical non-deterministic
@@ -768,7 +779,7 @@ def run_gr00t_sim_policy(
         policy_client_port,
         trt_engine_path=trt_engine_path,
         trt_mode=trt_mode,
-        algo=algo
+        algo=args.algo
     )
 
     results = run_rollout_gymnasium_policy(
@@ -778,7 +789,7 @@ def run_gr00t_sim_policy(
         n_episodes=n_episodes,
         n_envs=n_envs,
         seed=seed,
-        save_cam_video_dir=save_cam_video_dir
+        args=args
     )
     print("Video saved to: ", wrapper_configs.video.video_dir)
     return results
@@ -830,6 +841,8 @@ class RolloutConfig:
 
     algo: str | None = None
     save_cam_video_dir: str | None = None
+    tt_update: int | None = None
+    num_step_tt_in_traj: int | None = None
 
 
 if __name__ == "__main__":
@@ -858,8 +871,7 @@ if __name__ == "__main__":
         trt_engine_path=args.trt_engine_path,
         trt_mode=args.trt_mode,
         seed=args.seed,
-        algo=args.algo,
-        save_cam_video_dir=args.save_cam_video_dir,
+        args=args
     )
     print("results: ", results)
     print("success rate: ", np.mean(results[1]))
