@@ -23,24 +23,22 @@ N_envs=1
 max_episode_steps=700
 PORT=$1
 
-tt_update=5
-num_step_tt_in_traj=5
+guidance_scale=0.3
 
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
 
-    LOG_DIR="eval_logs/libero_10/cam_sensitivity_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
+    LOG_DIR="eval_logs/libero_10/camNS_guidance${guidance_scale}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
     VIDEO_DIR="$LOG_DIR/videos"
     mkdir -p "$LOG_DIR"
     mkdir -p "$VIDEO_DIR"
 
     echo "Running task: $TASK"
 
-    gr00t/eval/sim/LIBERO/libero_uv/.venv/bin/python gr00t/eval/rollout_policy_vis_cam.py \
-        --algo cam \
+    gr00t/eval/sim/LIBERO/libero_uv/.venv/bin/python gr00t/eval/rollout_policy_vis_cam_noise_steering.py \
+        --algo cam_noise_steering  \
         --save_cam_video_dir $LOG_DIR/grad_cam \
-        --tt_update $tt_update \
-        --num_step_tt_in_traj $num_step_tt_in_traj \
+        --guidance_scale $guidance_scale \
         --n_episodes $EPISODES \
         --policy_client_host 127.0.0.1 \
         --policy_client_port $PORT \

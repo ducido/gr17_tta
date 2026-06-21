@@ -554,14 +554,11 @@ def run_rollout_gymnasium_policy(
     pbar = tqdm(total=n_episodes, desc="Episodes")
     episode_cam_data = []
 
-    num_step_tt_in_traj = args.num_step_tt_in_traj
     while completed_episodes < n_episodes:
-        num_step_tt_in_traj = num_step_tt_in_traj - 1
         options = {
             'image_ooi': observations['image_ooi'], 
             'wrist_image_ooi': observations['wrist_image_ooi'], 
-            'tt_update': args.tt_update,
-            'num_step_tt_in_traj': num_step_tt_in_traj
+            'guidance_scale': args.guidance_scale,
         }
         actions, info = policy.get_action(observations, options=options)
         # cam_data = info['cam_data']
@@ -653,7 +650,6 @@ def run_rollout_gymnasium_policy(
 
                 ### Reset policy
                 policy.reset()
-                num_step_tt_in_traj = args.num_step_tt_in_traj
 
         observations = next_obs
     pbar.close()
@@ -841,8 +837,7 @@ class RolloutConfig:
 
     algo: str | None = None
     save_cam_video_dir: str | None = None
-    tt_update: int | None = None
-    num_step_tt_in_traj: int | None = None
+    guidance_scale: float | None = None
 
 
 if __name__ == "__main__":

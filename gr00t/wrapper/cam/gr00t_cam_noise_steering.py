@@ -12,20 +12,7 @@ from transformers.feature_extraction_utils import BatchFeature
 
 
 
-class Gr00tCamPolicy(Gr00tPolicy):
-
-    def reset(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Reset the policy to its initial state.
-
-        Args:
-            options: Dictionary containing the options for the reset
-
-        Returns:
-            Dictionary containing the info after resetting the policy
-        """
-        self.model.action_head.reset()
-        return {}
-
+class Gr00tCamNSPolicy(Gr00tPolicy):
     def _get_action(
         self, observation: dict[str, Any], options: dict[str, Any] | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -46,7 +33,6 @@ class Gr00tCamPolicy(Gr00tPolicy):
             Tuple of (actions_dict, info_dict)
         """
         # Step 1: Split batched observation into individual observations
-
         unbatched_observations = self._unbatch_observation(observation)
         processed_inputs = []
 
@@ -72,6 +58,7 @@ class Gr00tCamPolicy(Gr00tPolicy):
         batched_states = {}
         for k in self.modality_configs["state"].modality_keys:
             batched_states[k] = np.stack([s[k] for s in states], axis=0)  # (B, T, D)
+        breakpoint()
         unnormalized_action = self.processor.decode_action(
             normalized_action.cpu().numpy(), self.embodiment_tag, batched_states
         )
@@ -88,7 +75,7 @@ class Gr00tCamPolicy(Gr00tPolicy):
         return casted_action, {'cam_data': model_pred['cam_data'], 'input_ids': model_pred['input_ids']}
 
 
-class Gr00tN1d7_CAM(Gr00tN1d7):
+class Gr00tN1d7_CAMNS(Gr00tN1d7):
 
     def get_action(self, inputs: dict, options: dict[str, Any] | None = None) -> BatchFeature:
         """
@@ -123,7 +110,7 @@ class Gr00tN1d7_CAM(Gr00tN1d7):
         backbone_trainable = any(p.requires_grad for p in self.backbone.parameters())
         action_head_trainable = any(p.requires_grad for p in self.action_head.parameters())
         assert not backbone_trainable, "Backbone should be frozen"
-        assert action_head_trainable, "Action head should be trainable"
+        assert not action_head_trainable, "Action head should be frozen"
 
         backbone_inputs, action_inputs = self.prepare_input(inputs)
 
@@ -134,40 +121,16 @@ class Gr00tN1d7_CAM(Gr00tN1d7):
         
         action_outputs.update(input_ids=backbone_inputs['input_ids'].detach().cpu().numpy())
 
-
         return action_outputs
 
 
-class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
-    def init_optimizer_and_state(self):
-        self.steering_lr = 1e-4
-
-        self.steering_optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.steering_lr,
-        )
-
-        self._initial_action_head_state = copy.deepcopy(
-            self.state_dict()
-        )
-        print(self.state_dict().keys())
-
-    def reset(self):
-        self.load_state_dict(
-            self._initial_action_head_state
-        )
-
-        self.zero_grad(set_to_none=True)
-
-        self.steering_optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.steering_lr,
-        )
-        print("=================== RESET ACTION HEAD ===================")
-
-    def denoising_step(
+class Gr00tN1d7_CAMNS_ActionHead(Gr00tN1d7ActionHead):
+    def frozen_action_head(self):
+        for param in self.parameters():
+            param.requires_grad = False
+        
+    def get_action_with_features(
         self,
-        actions: torch.Tensor,
         backbone_features: torch.Tensor,
         state_features: torch.Tensor,
         embodiment_id: torch.Tensor,
@@ -175,12 +138,27 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
         action_input: BatchFeature,
         input_ids: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
-    ):
+    ) -> BatchFeature:
+        """
+        Generate actions using the flow matching diffusion process.
+
+        Args:
+            backbone_features: [B, seq_len, backbone_embedding_dim]
+            state_features: [B, state_horizon, input_embedding_dim]
+            embodiment_id: [B] (embodiment IDs)
+            backbone_output: Output from the backbone model
+        """
+        # Set initial actions as the sampled noise.
         vl_embeds = backbone_features
         vl_embeds.requires_grad_(True)
 
         batch_size = backbone_features.shape[0]
         device = backbone_features.device
+        actions = torch.randn(
+            size=(batch_size, self.config.action_horizon, self.action_dim),
+            dtype=backbone_features.dtype,
+            device=device,
+        )
 
         dt = 1.0 / self.num_inference_timesteps
         vel_strength = torch.ones_like(actions)
@@ -224,7 +202,6 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             ] = ramp[None, :, None].to(device)
 
         all_cam_data = []
-        total_loss = 0
         # Run denoising steps.
         for t in range(self.num_inference_timesteps):
             t_cont = t / float(self.num_inference_timesteps)  # e.g. goes 0, 1/N, 2/N, ...
@@ -264,6 +241,7 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             pred_velocity = pred[:, -self.action_horizon :]
 
             # Grad-CAM
+            # print(pred_velocity.shape) # torch.Size([1, 40, 132])
             target = pred_velocity.norm()
             grads = torch.autograd.grad(
                 outputs=target,
@@ -309,7 +287,7 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             target_behavior = torch.cat([image_ooi, wrist_image_ooi], dim=-1).to(dtype=sensitivity.dtype, device=sensitivity.device) # (1,128)
             sen_loss = cal_loss(sensitivity, target_behavior)
             ti_loss = cal_loss(token_importance, target_behavior)
-            total_loss = total_loss + sen_loss
+            loss = sen_loss + ti_loss
             # print(f"sen_loss: {sen_loss}, ti_loss: {ti_loss}")
             # self.steering_optimizer.zero_grad()
             # loss.backward()
@@ -326,86 +304,21 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             #     image_token_id=151655,
             #     options=new_options,
             # )
+            vel_grad = torch.autograd.grad(outputs=ti_loss, inputs=pred_velocity, retain_graph=True)[0]
+            pred_velocity = pred_velocity - options['guidance_scale'] * vel_grad
+            # Update actions using euler integration.
+            actions = actions + dt * pred_velocity * vel_strength
+
+
             cam_record = {
                 "denoise_step": t,
                 "t_discretized": int(t_discretized),
-
-                # [149]
-                "sensitivity": sensitivity[0].detach().cpu().float().numpy(),
-
-                # [149]
-                "token_importance": token_importance[0].detach().cpu().float().numpy(),
-
-                # optional
+                "sensitivity": sensitivity[0].detach().cpu().float().numpy(), # [149]
+                "token_importance": token_importance[0].detach().cpu().float().numpy(), # [149]
                 "pred_velocity": pred_velocity[0].detach().cpu().float().numpy(),
             }
-
             all_cam_data.append(cam_record)
-
-            # Update actions using euler integration.
-            actions = actions + dt * pred_velocity * vel_strength
-        return total_loss, actions, vl_embeds, state_features, all_cam_data
-        
-    def get_action_with_features(
-        self,
-        backbone_features: torch.Tensor,
-        state_features: torch.Tensor,
-        embodiment_id: torch.Tensor,
-        backbone_output: BatchFeature,
-        action_input: BatchFeature,
-        input_ids: torch.Tensor | None = None,
-        options: dict[str, Any] | None = None,
-    ) -> BatchFeature:
-        """
-        Generate actions using the flow matching diffusion process.
-
-        Args:
-            backbone_features: [B, seq_len, backbone_embedding_dim]
-            state_features: [B, state_horizon, input_embedding_dim]
-            embodiment_id: [B] (embodiment IDs)
-            backbone_output: Output from the backbone model
-        """
-        # Set initial actions as the sampled noise.
-        batch_size = backbone_features.shape[0]
-        device = backbone_features.device
-        actions = torch.randn(
-            size=(batch_size, self.config.action_horizon, self.action_dim),
-            dtype=backbone_features.dtype,
-            device=device,
-        )
-        if options['num_step_tt_in_traj'] <= 0:
-            total_loss, actions, vl_embeds, state_features, all_cam_data = self.denoising_step(
-                actions.detach(),
-                backbone_features.detach(),
-                state_features.detach(),
-                embodiment_id,
-                backbone_output,
-                action_input,
-                input_ids,
-                options,
-            )
-            print(f"num_step_tt_in_traj {options['num_step_tt_in_traj']}: loss = {total_loss.item()}")
-        else:
-            for i in range(options['tt_update']):
-                total_loss, actions, vl_embeds, state_features, all_cam_data = self.denoising_step(
-                    actions.detach(),
-                    backbone_features.detach(),
-                    state_features.detach(),
-                    embodiment_id,
-                    backbone_output,
-                    action_input,
-                    input_ids,
-                    options,
-                )
-                total_loss = total_loss.mean()
-                print(f"Step {i}: loss = {total_loss.item()}")
-                self.steering_optimizer.zero_grad()
-                total_loss.backward()
-                self.steering_optimizer.step()
-                # for n, p in self.model.named_parameters():
-                #     if p.grad is not None:
-                #         print(n, p.grad.norm().item())
-
+            
         return BatchFeature(
             data={
                 "action_pred": actions.detach(),

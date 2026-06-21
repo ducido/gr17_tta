@@ -104,8 +104,20 @@ def main(config: ServerConfig):
             policy.model.action_head.get_action = types.MethodType(Gr00tN1d7_CAM_ActionHead.get_action, policy.model.action_head)
             policy.model.action_head.get_action_with_features = types.MethodType(Gr00tN1d7_CAM_ActionHead.get_action_with_features, policy.model.action_head)
             policy.model.action_head.denoising_step = types.MethodType(Gr00tN1d7_CAM_ActionHead.denoising_step, policy.model.action_head)
-
             policy.model.action_head.init_optimizer_and_state()
+
+        elif config.algo == 'cam_noise_steering':
+            from gr00t.wrapper.cam.gr00t_cam_noise_steering import Gr00tCamNSPolicy, Gr00tN1d7_CAMNS, Gr00tN1d7_CAMNS_ActionHead
+            policy = Gr00tCamNSPolicy(
+                embodiment_tag=config.embodiment_tag,
+                model_path=config.model_path,
+                device=config.device,
+            )
+            policy.model.get_action = types.MethodType(Gr00tN1d7_CAMNS.get_action, policy.model)
+            policy.model.action_head.frozen_action_head = types.MethodType(Gr00tN1d7_CAMNS_ActionHead.frozen_action_head, policy.model.action_head)
+            policy.model.action_head.get_action = types.MethodType(Gr00tN1d7_CAMNS_ActionHead.get_action, policy.model.action_head)
+            policy.model.action_head.get_action_with_features = types.MethodType(Gr00tN1d7_CAMNS_ActionHead.get_action_with_features, policy.model.action_head)
+            policy.model.action_head.frozen_action_head()
         else:
             from gr00t.policy.gr00t_policy import Gr00tPolicy
             policy = Gr00tPolicy(
