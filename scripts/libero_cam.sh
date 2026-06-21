@@ -20,11 +20,11 @@ TASKS=(
 action_horizon=8
 EPISODES=1
 N_envs=1
-max_episode_steps=700
+max_episode_steps=60
 PORT=$1
 
-tt_update=5
-num_step_tt_in_traj=5
+tt_update=0
+num_step_tt_in_traj=0
 
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
@@ -38,7 +38,7 @@ for TASK in "${TASKS[@]}"; do
 
     gr00t/eval/sim/LIBERO/libero_uv/.venv/bin/python gr00t/eval/rollout_policy_vis_cam.py \
         --algo cam \
-        --save_cam_video_dir $LOG_DIR/grad_cam \
+        --save_cam_video_dir $LOG_DIR/grad_cam_dim2 \
         --tt_update $tt_update \
         --num_step_tt_in_traj $num_step_tt_in_traj \
         --n_episodes $EPISODES \

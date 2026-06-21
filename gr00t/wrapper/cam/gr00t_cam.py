@@ -264,7 +264,9 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             pred_velocity = pred[:, -self.action_horizon :]
 
             # Grad-CAM
-            target = pred_velocity.norm()
+            # print(pred_velocity.shape) # torch.Size([1, 40, 132])
+            c_pred_vel = pred_velocity[:,:,2:3]
+            target = c_pred_vel.norm()
             grads = torch.autograd.grad(
                 outputs=target,
                 inputs=vl_embeds,
