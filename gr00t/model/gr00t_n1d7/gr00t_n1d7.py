@@ -20,6 +20,7 @@ import torch
 from torch import nn
 from torch.distributions import Beta
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import AutoConfig, AutoModel, PreTrainedModel
 from transformers.feature_extraction_utils import BatchFeature
 import tree
@@ -30,6 +31,9 @@ from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
 )
+from PIL import Image
+import os
+import numpy as np
 
 
 logger = logging.getLogger(__name__)
@@ -165,7 +169,7 @@ class Gr00tN1d7ActionHead(nn.Module):
         backbone_output["backbone_features"] = backbone_features
         return backbone_output
 
-    def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+    def forward(self, backbone_output: BatchFeature, action_input: BatchFeature, ooi_inputs: dict | None = None, input_ids: torch.Tensor | None = None) -> BatchFeature:
         """
         Forward pass through the action head.
 
@@ -234,41 +238,100 @@ class Gr00tN1d7ActionHead(nn.Module):
         sa_embs = torch.cat((state_features, action_features), dim=1)
         vl_attn_mask = backbone_output.backbone_attention_mask
 
-        if self.config.use_alternate_vl_dit:
-            image_mask = backbone_output.image_mask
-            backbone_attention_mask = backbone_output.backbone_attention_mask
-            model_output, _ = self.model(
-                hidden_states=sa_embs,
-                encoder_hidden_states=vl_embeds,
-                encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
-                return_all_hidden_states=True,
-                image_mask=image_mask,
-                backbone_attention_mask=backbone_attention_mask,
-            )
-        else:
-            model_output, _ = self.model(
-                hidden_states=sa_embs,
-                encoder_hidden_states=vl_embeds,
-                encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
-                return_all_hidden_states=True,
-            )
+        # Force the math SDPA backend so the DiT attention is twice-differentiable.
+        # The token-importance loss below computes gradients with create_graph=True and
+        # then backprops through them, which requires double-backward through attention.
+        # The flash / mem-efficient kernels don't implement a second derivative.
+        with sdpa_kernel(SDPBackend.MATH):
+            if self.config.use_alternate_vl_dit:
+                image_mask = backbone_output.image_mask
+                backbone_attention_mask = backbone_output.backbone_attention_mask
+                model_output, _ = self.model(
+                    hidden_states=sa_embs,
+                    encoder_hidden_states=vl_embeds,
+                    encoder_attention_mask=vl_attn_mask,
+                    timestep=t_discretized,
+                    return_all_hidden_states=True,
+                    image_mask=image_mask,
+                    backbone_attention_mask=backbone_attention_mask,
+                )
+            else:
+                model_output, _ = self.model(
+                    hidden_states=sa_embs,
+                    encoder_hidden_states=vl_embeds,
+                    encoder_attention_mask=vl_attn_mask,
+                    timestep=t_discretized,
+                    return_all_hidden_states=True,
+                )
 
-        pred = self.action_decoder(model_output, embodiment_id)
-        pred_actions = pred[:, -actions.shape[1] :]
+        pred = self.action_decoder(model_output, embodiment_id) # torch.Size([160, 41, 132])
+        pred_actions = pred[:, -actions.shape[1] :] # torch.Size([160, 40, 132])
 
         # Slice out only the action portion of pred and target.
-        action_mask = action_input.action_mask
+        action_mask = action_input.action_mask # torch.Size([160, 40, 132])  pred_actions[action_mask.bool()] -> libero: (160*16*7,)
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
-        loss = action_loss.sum() / (action_mask.sum() + 1e-6)
+        action_loss = action_loss.sum() / (action_mask.sum() + 1e-6)
+        loss = action_loss
+
+        ######### Compute ooi loss
+        target = (pred_actions * action_mask).norm()
+        grads = torch.autograd.grad(
+            outputs=target,
+            inputs=vl_embeds, # torch.Size([160, 156, 2048])
+            retain_graph=True,
+            create_graph=True,
+        )[0] # torch.Size([160, 156, 2048])
+        # print(grads)
+        
+        # sensitivity = grads.norm(dim=-1) # (160, 156)
+        token_importance = torch.relu((grads * vl_embeds).sum(-1)) # (B, 156)
+
+        def process_ooi(ooi_inputs):
+            new_ooi_inputs = {}
+            for k, v in ooi_inputs.items():
+                v = v.squeeze()[...,0] # B,256,256
+
+                # #### for visualize to debug
+                # vis_v = v.detach().cpu().numpy()
+                # for i in range(vis_v.shape[0]):
+                #     vis_im = Image.fromarray(vis_v[i])
+                #     vis_im.save(f"/pfss/mlde/workspaces/mlde_wsp_IAS_SAMMerge/VLA/duc/gr17_tta/debug/debug_{k}_{i}.png")
+                # ####
+                
+                v = v.unsqueeze(dim=1).float() / 255.0
+                v = torch.nn.functional.adaptive_avg_pool2d(v, (8, 8))
+                new_ooi_inputs[k] = v.view(v.shape[0], -1)
+            return new_ooi_inputs
+
+        new_ooi_inputs = process_ooi(ooi_inputs)
+
+        def cal_loss(current_behavior, target_behavior):
+            # current_behavior: (1, 149)
+            # target_behavior: (1, 128)
+            image_mask = input_ids == 151655 
+
+            current_behavior = current_behavior[image_mask].view(target_behavior.shape[0], -1)
+            assert current_behavior.shape == target_behavior.shape, f"Shape mismatch: {current_behavior.shape} vs {target_behavior.shape}"
+
+            pred = current_behavior.clamp_min(1e-8)
+            target = target_behavior.clamp_min(1e-8)
+            pred = pred / (pred.sum(dim=-1, keepdim=True) + 1e-8)
+            target = target / (target.sum(dim=-1, keepdim=True) + 1e-8)
+            loss = torch.nn.functional.kl_div(pred.log(), target, reduction="batchmean")
+            return loss
+        
+        image_ooi = new_ooi_inputs['image_ooi'] # (B,64)
+        wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'] # (B,64)
+        target_behavior = torch.cat([image_ooi, wrist_image_ooi], dim=-1).to(dtype=token_importance.dtype, device=token_importance.device) # (1,128)
+        ti_loss = cal_loss(token_importance, target_behavior)
 
         return {
-            "loss": loss,
+            "loss": loss + 0.0 * ti_loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
             "state_features": state_features,
+            "ti_loss": ti_loss,
         }
 
     def _encode_features(
@@ -580,9 +643,11 @@ class Gr00tN1d7(PreTrainedModel):
             BatchFeature containing loss and other outputs
         """
         # Prepare inputs for backbone and action head
+        ooi_inputs = inputs['ooi_inputs']
+        del inputs['ooi_inputs']
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
-        action_outputs = self.action_head(backbone_outputs, action_inputs)
+        action_outputs = self.action_head(backbone_outputs, action_inputs, ooi_inputs=ooi_inputs, input_ids=backbone_inputs['input_ids'])
 
         return action_outputs
 

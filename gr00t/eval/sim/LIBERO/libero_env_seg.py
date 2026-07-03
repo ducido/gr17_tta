@@ -115,9 +115,9 @@ class LiberoEnv(gym.Env):
                 "video.wrist_image": gym.spaces.Box(
                     low=0, high=255, shape=(256, 256, 3), dtype=np.uint8
                 ),
-                "image_ooi": gym.spaces.Box(low=0, high=1, shape=(256, 256, 1), dtype=np.uint8),
-                "wrist_image_ooi": gym.spaces.Box(
-                    low=0, high=1, shape=(256, 256, 1), dtype=np.uint8
+                "video.image_ooi": gym.spaces.Box(low=0, high=1, shape=(256, 256, 3), dtype=np.uint8),
+                "video.wrist_image_ooi": gym.spaces.Box(
+                    low=0, high=1, shape=(256, 256, 3), dtype=np.uint8
                 ),
                 "state.x": gym.spaces.Box(low=-1, high=1, shape=(1,)),
                 "state.y": gym.spaces.Box(low=-1, high=1, shape=(1,)),
@@ -148,11 +148,16 @@ class LiberoEnv(gym.Env):
         xyz = obs["robot0_eef_pos"]
         rpy = quat2axisangle(obs["robot0_eef_quat"])
         gripper = obs["robot0_gripper_qpos"]
+
+        image_ooi = self._env.get_segmentation_of_interest(obs["agentview_segmentation_instance"])[::-1, ::-1].astype(np.uint8)
+        image_ooi = np.repeat(image_ooi, 3, axis=2) 
+        wrist_image_ooi = self._env.get_segmentation_of_interest(obs["robot0_eye_in_hand_segmentation_instance"])[::-1, ::-1].astype(np.uint8)
+        wrist_image_ooi = np.repeat(wrist_image_ooi, 3, axis=2)
         new_obs = {
             "video.image": obs["agentview_image"][::-1, ::-1],
             "video.wrist_image": obs["robot0_eye_in_hand_image"][::-1, ::-1],
-            "image_ooi": self._env.get_segmentation_of_interest(obs["agentview_segmentation_instance"])[::-1, ::-1].astype(np.uint8),
-            "wrist_image_ooi": self._env.get_segmentation_of_interest(obs["robot0_eye_in_hand_segmentation_instance"])[::-1, ::-1].astype(np.uint8),
+            "video.image_ooi": image_ooi,
+            "video.wrist_image_ooi": wrist_image_ooi,
             "state.x": [xyz[0]],
             "state.y": [xyz[1]],
             "state.z": [xyz[2]],
@@ -268,7 +273,6 @@ if __name__ == "__main__":
         for step in range(1):
             obs, reward, done, info = env.step(dummy_action)
             # print("step", step, "obs", obs.keys())
-
         # for key in obs.keys():
         #     if 'segmentation' in key:
         #         print(f"{key}: {obs[key].shape}")

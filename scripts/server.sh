@@ -1,9 +1,10 @@
 
 TAG=$1
 PORT=$2
+MODEL_PATH=$3
 
 if [ -z "$TAG" ] || [ -z "$PORT" ]; then
-  echo "Usage: $0 [wdx | gg_robot | robocasa] [PORT]"
+  echo "Usage: $0 [wdx | gg_robot | robocasa] [PORT] [MODEL_PATH (optional)]"
   exit 1
 fi
 
@@ -17,19 +18,19 @@ module load cuda/12.6.2
 # ===== Config by tag =====
 case "$TAG" in
   wdx)
-    MODEL_PATH="CP/GR00T-N1.6-bridge"
+    DEFAULT_MODEL_PATH="CP/GR00T-N1.6-bridge"
     EMBODIMENT="OXE_WIDOWX"
     ;;
   gg_robot)
-    MODEL_PATH="CP/GR00T-N1.6-fractal"
+    DEFAULT_MODEL_PATH="CP/GR00T-N1.6-fractal"
     EMBODIMENT="OXE_GOOGLE"
     ;;
   robocasa)
-    MODEL_PATH="CP/GR00T-N1.6-3B"
+    DEFAULT_MODEL_PATH="CP/GR00T-N1.6-3B"
     EMBODIMENT="ROBOCASA_PANDA_OMRON"
     ;;
   libero_10)
-    MODEL_PATH="CP/GR00T-N1.7-LIBERO/libero_10"
+    DEFAULT_MODEL_PATH="CP/GR00T-N1.7-LIBERO/libero_10"
     EMBODIMENT="LIBERO_PANDA"
     ;;
   *)
@@ -37,6 +38,8 @@ case "$TAG" in
     exit 1
     ;;
 esac
+
+MODEL_PATH="${MODEL_PATH:-$DEFAULT_MODEL_PATH}"
 
 # ===== Run =====
 echo "Running with:"

@@ -234,6 +234,10 @@ def run(config: Config):
     pipeline.setup()
     model = pipeline.return_model()
     train_dataset, eval_dataset = pipeline.return_dataset()
+    # for sample in train_dataset:
+    #     print(sample.keys())
+    #     break
+    # breakpoint()
     data_collator = pipeline.return_collator()
     processor = pipeline.return_processor()
     # statistics.json here is read by Gr00tPolicy.from_pretrained at deploy time;

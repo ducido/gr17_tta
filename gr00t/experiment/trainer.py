@@ -329,6 +329,24 @@ class Gr00tTrainer(Trainer):
         self.loss = loss
 
         # --------------------------------------------------------------
+        # Loss-component logging (total / action / ti)
+        # --------------------------------------------------------------
+        if self.state.global_step % self.args.logging_steps == 0 and model.training:
+            get = outputs.get if isinstance(outputs, dict) else lambda k: getattr(outputs, k, None)
+            log_dict = {}
+            for log_name, key in (
+                ("action_loss", "action_loss"),
+                ("ti_loss", "ti_loss"),
+            ):
+                val = get(key)
+                if val is None:
+                    continue
+                val_tensor = val.detach().to(loss.device)
+                log_dict[log_name] = self._nested_gather(val_tensor).mean().item()
+            if log_dict and self.args.local_rank in (-1, 0):
+                self.log(log_dict)
+
+        # --------------------------------------------------------------
         # Accuracy calculation
         # --------------------------------------------------------------
         if (

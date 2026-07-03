@@ -120,21 +120,17 @@ class Gr00tN1d7_CAM(Gr00tN1d7):
         # print(f"is trainable     : {trainable > 0}")
         # breakpoint()
 
-        # backbone_trainable = any(p.requires_grad for p in self.backbone.parameters())
-        # action_head_trainable = any(p.requires_grad for p in self.action_head.parameters())
-        # assert not backbone_trainable, "Backbone should be frozen"
-        # assert action_head_trainable, "Action head should be trainable"
-
-        ooi_inputs = inputs['ooi_inputs']
-        
-        del inputs['ooi_inputs']
+        backbone_trainable = any(p.requires_grad for p in self.backbone.parameters())
+        action_head_trainable = any(p.requires_grad for p in self.action_head.parameters())
+        assert not backbone_trainable, "Backbone should be frozen"
+        assert action_head_trainable, "Action head should be trainable"
 
         backbone_inputs, action_inputs = self.prepare_input(inputs)
 
         # Forward through backbone
         backbone_outputs = self.backbone(backbone_inputs)
 
-        action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, ooi_inputs=ooi_inputs, input_ids=backbone_inputs['input_ids'], options=options)
+        action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, input_ids=backbone_inputs['input_ids'], options=options)
         
         action_outputs.update(input_ids=backbone_inputs['input_ids'].detach().cpu().numpy())
 
@@ -177,7 +173,6 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
         embodiment_id: torch.Tensor,
         backbone_output: BatchFeature,
         action_input: BatchFeature,
-        ooi_inputs: dict[str, torch.Tensor] | None = None,
         input_ids: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
     ):
@@ -269,44 +264,39 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             pred_velocity = pred[:, -self.action_horizon :]
 
             # Grad-CAM
-            action_mask = action_input.action_mask
-            target = (pred_velocity * action_mask).norm()
+            # print(pred_velocity.shape) # torch.Size([1, 40, 132])
+            c_pred_vel = pred_velocity[:,:,2:3]
+            target = c_pred_vel.norm()
             grads = torch.autograd.grad(
                 outputs=target,
-                inputs=vl_embeds, # torch.Size([160, 156, 2048])
+                inputs=vl_embeds,
                 retain_graph=True,
                 create_graph=True,
-            )[0] # torch.Size([160, 156, 2048])
-            # print(grads)
-            
-            sensitivity = grads.norm(dim=-1) # (160, 156)
-            token_importance = torch.relu((grads * vl_embeds).sum(-1)) # (B, 156)
+            )[0]
+            sensitivity = grads.norm(dim=-1) # (1,149)
+            token_importance = torch.relu((grads * vl_embeds).sum(-1)) # (1,149)
 
-            def process_ooi(ooi_inputs):
-                new_ooi_inputs = {}
-                for k, v in ooi_inputs.items():
-                    v = v.squeeze(dim=1)[...,0] # B,256,256
+            def process_ooi(options):
+                new_options = {}
+                for k, v in options.items():
+                    if 'image' not in k:
+                        continue
+                    v = torch.tensor(v, dtype=torch.float32)
+                    v = v.squeeze(dim=[1,-1]) # v has shape (1, 256,256)
+                    # resize to (1,8,8)
+                    # v = torch.nn.functional.interpolate(v.unsqueeze(0), size=(8, 8), mode='bilinear', align_corners=False)
+                    v = torch.nn.functional.adaptive_avg_pool2d(v.unsqueeze(0), (8, 8))
+                    new_options[k] = v.squeeze(0).view(1, -1)
+                return new_options
 
-                    # #### for visualize to debug
-                    # vis_v = v.detach().cpu().numpy()
-                    # for i in range(vis_v.shape[0]):
-                    #     vis_im = Image.fromarray(vis_v[i])
-                    #     vis_im.save(f"/pfss/mlde/workspaces/mlde_wsp_IAS_SAMMerge/VLA/duc/gr17_tta/debug/debug_{k}_{i}.png")
-                    # ####
-                    
-                    v = v.unsqueeze(dim=1).float() / 255.0
-                    v = torch.nn.functional.adaptive_avg_pool2d(v, (8, 8))
-                    new_ooi_inputs[k] = v.view(v.shape[0], -1)
-                return new_ooi_inputs
-
-            new_ooi_inputs = process_ooi(ooi_inputs)
+            new_options = process_ooi(options)
 
             def cal_loss(current_behavior, target_behavior):
                 # current_behavior: (1, 149)
                 # target_behavior: (1, 128)
-                image_mask = input_ids == 151655 
+                image_mask = input_ids[0] == 151655 
 
-                current_behavior = current_behavior[image_mask].view(target_behavior.shape[0], -1)
+                current_behavior = current_behavior[:, image_mask]
                 assert current_behavior.shape == target_behavior.shape, f"Shape mismatch: {current_behavior.shape} vs {target_behavior.shape}"
 
                 pred = current_behavior.clamp_min(1e-8)
@@ -316,12 +306,16 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
                 loss = torch.nn.functional.kl_div(pred.log(), target, reduction="batchmean")
                 return loss
             
-            image_ooi = new_ooi_inputs['image_ooi'] # (B,64)
-            wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'] # (B,64)
-            target_behavior = torch.cat([image_ooi, wrist_image_ooi], dim=-1).to(dtype=token_importance.dtype, device=token_importance.device) # (1,128)
-
+            image_ooi = new_options['image_ooi'] # (1,64)
+            wrist_image_ooi = new_options['wrist_image_ooi'] # (1,64)
+            target_behavior = torch.cat([image_ooi, wrist_image_ooi], dim=-1).to(dtype=sensitivity.dtype, device=sensitivity.device) # (1,128)
+            sen_loss = cal_loss(sensitivity, target_behavior)
             ti_loss = cal_loss(token_importance, target_behavior)
-            total_loss = ti_loss
+            total_loss = total_loss + sen_loss
+            # print(f"sen_loss: {sen_loss}, ti_loss: {ti_loss}")
+            # self.steering_optimizer.zero_grad()
+            # loss.backward()
+            # self.steering_optimizer.step()
 
             # sensitivity, token_importance = create_dummy_heatmaps(
             #     input_ids=input_ids,
@@ -361,7 +355,6 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
         embodiment_id: torch.Tensor,
         backbone_output: BatchFeature,
         action_input: BatchFeature,
-        ooi_inputs: dict[str, torch.Tensor] | None = None,
         input_ids: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
     ) -> BatchFeature:
@@ -390,11 +383,10 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
                 embodiment_id,
                 backbone_output,
                 action_input,
-                ooi_inputs,
                 input_ids,
                 options,
             )
-            # print(f"num_step_tt_in_traj {options['num_step_tt_in_traj']}: loss = {total_loss.item()}")
+            print(f"num_step_tt_in_traj {options['num_step_tt_in_traj']}: loss = {total_loss.item()}")
         else:
             for i in range(options['tt_update']):
                 total_loss, actions, vl_embeds, state_features, all_cam_data = self.denoising_step(
@@ -404,7 +396,6 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
                     embodiment_id,
                     backbone_output,
                     action_input,
-                    ooi_inputs,
                     input_ids,
                     options,
                 )
@@ -430,7 +421,6 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
         self,
         backbone_output: BatchFeature,
         action_input: BatchFeature,
-        ooi_inputs: dict[str, torch.Tensor] | None = None,
         input_ids: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
     ) -> BatchFeature:
@@ -457,7 +447,6 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             embodiment_id=action_input.embodiment_id,
             backbone_output=backbone_output,
             action_input=action_input,
-            ooi_inputs=ooi_inputs,
             input_ids=input_ids,
             options=options,
         )

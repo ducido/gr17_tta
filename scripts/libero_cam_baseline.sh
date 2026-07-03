@@ -2,7 +2,7 @@
 export CUDA_VISIBLE_DEVICES=0
 # module load gcc/13.2.0
 # module load ffmpeg/7.0.2
-export PYOPENGL_PLATFORM=egl
+# export PYOPENGL_PLATFORM=osmesa
 
 TASKS=(
     libero_sim/LIVING_ROOM_SCENE2_put_both_the_alphabet_soup_and_the_tomato_sauce_in_the_basket
@@ -29,7 +29,7 @@ num_step_tt_in_traj=0
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
 
-    LOG_DIR="eval_logs/libero_10/algo_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
+    LOG_DIR="eval_logs/libero_10/baseline_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
     VIDEO_DIR="$LOG_DIR/videos"
     mkdir -p "$LOG_DIR"
     mkdir -p "$VIDEO_DIR"

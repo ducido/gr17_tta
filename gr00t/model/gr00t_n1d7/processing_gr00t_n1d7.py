@@ -133,6 +133,18 @@ class Gr00tN1d7DataCollator:
                 "input_ids",
             ):
                 raise Exception("Not implemented")
+            elif key == 'ooi_inputs':
+                # ooi_inputs is a list of dicts with 'image_ooi' and 'wrist_image_ooi' keys
+                # We need to stack the images and wrist images separately
+                image_ooi_list = []
+                wrist_image_ooi_list = []
+                for v in values:
+                    image_ooi_list.append(v['image_ooi'])
+                    wrist_image_ooi_list.append(v['wrist_image_ooi'])
+                batch[key] = {
+                    'image_ooi': torch.from_numpy(np.stack(image_ooi_list)),
+                    'wrist_image_ooi': torch.from_numpy(np.stack(wrist_image_ooi_list)),
+                }
             else:
                 # state, state_mask, action and action_mask - stack to form batch dimension
                 batch[key] = torch.from_numpy(np.stack(values))
@@ -382,6 +394,8 @@ class Gr00tN1d7Processor(BaseProcessor):
         Returns:
             BatchFeature with tokenized VLM inputs, state, embodiment_id, and action_mask.
         """
+        breakpoint()
+
         modality_config = self.modality_configs[embodiment_tag.value]
         transformed_observation = {}
 
@@ -469,6 +483,9 @@ class Gr00tN1d7Processor(BaseProcessor):
         if action_horizon > 0:
             action_mask[:, :action_horizon] = 1.0
         transformed_observation["action_mask"] = action_mask
+
+        breakpoint()
+
 
         return BatchFeature(transformed_observation)
 
@@ -567,7 +584,20 @@ class Gr00tN1d7Processor(BaseProcessor):
         else:
             assert not self.training, "Action is required in training mode"
             normalized_actions = None
-            action_mask = None
+            # No ground-truth actions at inference, but the mask only depends on the
+            # embodiment's horizon and action dim, so build it anyway for consumers
+            # like Grad-CAM that mask the padded region of the prediction.
+            action_horizon = len(
+                self.modality_configs[embodiment_tag.value]["action"].delta_indices
+            )
+            action_dim = sum(
+                self.state_action_processor.norm_params[embodiment_tag.value]["action"][key][
+                    "dim"
+                ].item()
+                for key in self.modality_configs[embodiment_tag.value]["action"].modality_keys
+            )
+            action_mask = torch.zeros(self.max_action_horizon, self.max_action_dim)
+            action_mask[:action_horizon, :action_dim] = 1.0
 
         # Concatenate states with optional dropout/noise augmentation
         state_keys = self.modality_configs[embodiment_tag.value]["state"].modality_keys
@@ -610,6 +640,16 @@ class Gr00tN1d7Processor(BaseProcessor):
         else:
             language = content.text
 
+        ####### for OOI
+        image_ooi_keys = [key for key in image_keys if "ooi" in key]
+        image_keys = [key for key in image_keys if "ooi" not in key]
+        ooi_inputs = {}
+        for key in image_ooi_keys:
+            val = content.images[key]
+            val = [i.astype('uint8') for i in val]
+            ooi_inputs[key] = val
+        #######
+
         vlm_inputs = self._get_vlm_inputs(
             image_keys=image_keys,
             images=content.images,
@@ -618,6 +658,7 @@ class Gr00tN1d7Processor(BaseProcessor):
             language=language,
         )
 
+
         transformed_inputs = {
             "state": normalized_states.to(torch.get_default_dtype()),
         }
@@ -625,6 +666,7 @@ class Gr00tN1d7Processor(BaseProcessor):
             transformed_inputs["action"] = normalized_actions.to(torch.get_default_dtype())
         # Add VLM inputs
         transformed_inputs.update(vlm_inputs)
+        transformed_inputs.update(ooi_inputs=ooi_inputs)
         if action_mask is not None:
             transformed_inputs["action_mask"] = action_mask
         transformed_inputs["embodiment_id"] = self.embodiment_id_mapping[embodiment_tag.value]

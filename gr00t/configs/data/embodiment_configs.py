@@ -193,7 +193,7 @@ MODALITY_CONFIGS = {
     "libero_sim": {
         "video": ModalityConfig(
             delta_indices=[0],
-            modality_keys=["image", "wrist_image"],
+            modality_keys=["image", "wrist_image", "image_ooi", "wrist_image_ooi"],
         ),
         "state": ModalityConfig(
             delta_indices=[0],

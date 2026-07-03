@@ -184,7 +184,6 @@ def create_eval_env(
     """
 
     env = get_gym_env(env_name, env_idx, total_n_envs)
-    breakpoint()
     if wrapper_configs.video.video_dir is not None:
         from gr00t.eval.sim.wrapper.video_recording_wrapper import (
             VideoRecorder,
@@ -555,6 +554,7 @@ def run_rollout_gymnasium_policy(
 
     pbar = tqdm(total=n_episodes, desc="Episodes")
     episode_cam_data = []
+    breakpoint()
 
     while completed_episodes < n_episodes:
         actions, info = policy.get_action(observations)
