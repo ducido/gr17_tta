@@ -337,6 +337,7 @@ class Gr00tTrainer(Trainer):
             for log_name, key in (
                 ("action_loss", "action_loss"),
                 ("ti_loss", "ti_loss"),
+                ("sen_loss", "sen_loss"),
             ):
                 val = get(key)
                 if val is None:

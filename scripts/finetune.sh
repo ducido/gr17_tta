@@ -15,5 +15,5 @@ NUM_GPUS=$NUM_GPUS MAX_STEPS=$MAX_STEPS GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE SAV
     --base-model-path $CP_DIR \
     --dataset-path $DATA_DIR \
     --embodiment-tag LIBERO_PANDA \
-    --output-dir ./outputs/${DATE}_algo_merged_libero_${NUM_GPUS}gpus_${MAX_STEPS}steps_${GLOBAL_BATCH_SIZE}bs_${SAVE_STEPS}ss_weight0.0 \
+    --output-dir ./outputs/${DATE}_senti_merged_libero_${NUM_GPUS}gpus_${MAX_STEPS}steps_${GLOBAL_BATCH_SIZE}bs_${SAVE_STEPS}ss \
     --state-dropout-prob 0.2

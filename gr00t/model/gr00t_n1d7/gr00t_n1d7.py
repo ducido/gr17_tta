@@ -283,7 +283,7 @@ class Gr00tN1d7ActionHead(nn.Module):
         )[0] # torch.Size([160, 156, 2048])
         # print(grads)
         
-        # sensitivity = grads.norm(dim=-1) # (160, 156)
+        sensitivity = grads.norm(dim=-1) # (B, 156)
         token_importance = torch.relu((grads * vl_embeds).sum(-1)) # (B, 156)
 
         def process_ooi(ooi_inputs):
@@ -324,14 +324,16 @@ class Gr00tN1d7ActionHead(nn.Module):
         wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'] # (B,64)
         target_behavior = torch.cat([image_ooi, wrist_image_ooi], dim=-1).to(dtype=token_importance.dtype, device=token_importance.device) # (1,128)
         ti_loss = cal_loss(token_importance, target_behavior)
+        sen_loss = cal_loss(sensitivity, target_behavior)
 
         return {
-            "loss": loss + 0.0 * ti_loss,
+            "loss": loss + ti_loss + sen_loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
             "state_features": state_features,
             "ti_loss": ti_loss,
+            "sen_loss": sen_loss,
         }
 
     def _encode_features(
