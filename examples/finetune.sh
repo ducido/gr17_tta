@@ -21,6 +21,8 @@ OUTPUT_DIR=""
 EXPERIMENT_NAME=""
 WANDB_PROJECT=""
 STATE_DROPOUT_PROB=""
+NOISE_BETA_ALPHA=""
+NOISE_BETA_BETA=""
 EXTRA_ARGS=()
 
 usage() {
@@ -32,6 +34,8 @@ Usage: bash examples/finetune.sh \
   --output-dir <path> \
   [--modality-config-path <path>] \
   [--state-dropout-prob <value>] \
+  [--noise-beta-alpha <value>] \
+  [--noise-beta-beta <value>] \
   [--save-only-model] \
   [--resume-from-checkpoint] \
   [-- <extra launch_finetune.py args>...]
@@ -70,6 +74,14 @@ while [ "$#" -gt 0 ]; do
             ;;
         --state-dropout-prob)
             STATE_DROPOUT_PROB="$2"
+            shift 2
+            ;;
+        --noise-beta-alpha)
+            NOISE_BETA_ALPHA="$2"
+            shift 2
+            ;;
+        --noise-beta-beta)
+            NOISE_BETA_BETA="$2"
             shift 2
             ;;
         --save-only-model)
@@ -144,6 +156,12 @@ fi
 
 if [ -n "$STATE_DROPOUT_PROB" ]; then
     LAUNCH_CMD+=(--state_dropout_prob "$STATE_DROPOUT_PROB")
+fi
+if [ -n "$NOISE_BETA_ALPHA" ]; then
+    LAUNCH_CMD+=(--noise_beta_alpha "$NOISE_BETA_ALPHA")
+fi
+if [ -n "$NOISE_BETA_BETA" ]; then
+    LAUNCH_CMD+=(--noise_beta_beta "$NOISE_BETA_BETA")
 fi
 if [ -n "${SAVE_ONLY_MODEL:-}" ]; then
     LAUNCH_CMD+=(--save_only_model)

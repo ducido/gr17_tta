@@ -32,19 +32,21 @@ def main():
         else:
             results[task_dir.name] = rate
 
+    # Comma-separated so it pastes straight into Google Sheets (name -> col A, rate -> col B)
+    print("task,success_rate")
     for name, rate in results.items():
-        print(f"{rate:.2f}  {name}")
+        print(f"{name},{rate:.2f}")
+
+    if results:
+        mean = sum(results.values()) / len(results)
+        print(f"mean,{mean:.4f}")
 
     if missing:
         print(f"\nWARNING: no success rate found for {len(missing)} task(s):")
         for name in missing:
             print(f"  {name}")
 
-    if results:
-        mean = sum(results.values()) / len(results)
-        print(f"\nTasks: {len(results)}")
-        print(f"Mean success rate: {mean:.4f}")
-    else:
+    if not results:
         print("No success rates found.")
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ TASKS=(
 )
 
 action_horizon=8
-EPISODES=50
+EPISODES=20
 N_envs=1
 max_episode_steps=720
 PORT=$1
@@ -29,7 +29,7 @@ num_step_tt_in_traj=0
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
 
-    LOG_DIR="eval_logs/libero_10/algo_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
+    LOG_DIR="eval_logs/libero_10/sen_20k_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
     VIDEO_DIR="$LOG_DIR/videos"
     mkdir -p "$LOG_DIR"
     mkdir -p "$VIDEO_DIR"
@@ -38,7 +38,7 @@ for TASK in "${TASKS[@]}"; do
 
     gr00t/eval/sim/LIBERO/libero_uv/.venv/bin/python gr00t/eval/rollout_policy_vis_cam.py \
         --algo cam \
-        --save_cam_video_dir $LOG_DIR/grad_cam_action_mask/$NAME \
+        --save_cam_video_dir $LOG_DIR/grad_cam_action_mask \
         --tt_update $tt_update \
         --num_step_tt_in_traj $num_step_tt_in_traj \
         --n_episodes $EPISODES \
@@ -48,7 +48,6 @@ for TASK in "${TASKS[@]}"; do
         --env_name "$TASK" \
         --n_action_steps $action_horizon \
         --n_envs $N_envs \
-        --video_dir "$VIDEO_DIR" \
         > "$LOG_DIR/${NAME}.txt" 2>&1
 
     # gr00t/eval/sim/LIBERO/libero_uv/.venv/bin/python gr00t/eval/rollout_policy.py \

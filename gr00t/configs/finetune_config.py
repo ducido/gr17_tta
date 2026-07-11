@@ -63,6 +63,12 @@ class FinetuneConfig:
     Dropout probability applied to state inputs for regularization during training.
     """
 
+    noise_beta_alpha: float = 1.5
+    """Alpha parameter of the Beta distribution used to sample flow-matching timesteps."""
+
+    noise_beta_beta: float = 1.0
+    """Beta parameter of the Beta distribution used to sample flow-matching timesteps."""
+
     # --- Data Augmentation ---
     random_rotation_angle: int | None = None
     """Maximum rotation angle (in degrees) for random rotation augmentation of input images."""

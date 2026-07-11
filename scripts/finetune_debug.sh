@@ -16,4 +16,6 @@ NUM_GPUS=$NUM_GPUS MAX_STEPS=$MAX_STEPS GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE SAV
     --dataset-path $DATA_DIR \
     --embodiment-tag LIBERO_PANDA \
     --output-dir ./outputs/debug \
-    --state-dropout-prob 0.2
+    --state-dropout-prob 0.2 \
+    --noise-beta-alpha 1.0 \
+    --noise-beta-beta 1.0
