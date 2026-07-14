@@ -95,7 +95,7 @@ def invert_gripper_action(action):
     return action
 
 
-class LiberoEnv(gym.Env):
+class LiberoPlusEnvSeg(gym.Env):
     """LanguageTable env."""
 
     def __init__(self, task_bddl_file: str, task_description: str):
@@ -200,7 +200,7 @@ class LiberoEnv(gym.Env):
         return observation, reward, done, truncated, info
 
 
-def register_libero_envs():
+def register_libero_plus_envs_seg():
     benchmark_dict = benchmark.get_benchmark_dict()
     for task_suite_name in [
         "libero_10",
@@ -219,7 +219,7 @@ def register_libero_envs():
             )
             register(
                 id=f"libero_sim/{task_name}",
-                entry_point="gr00t.eval.sim.LIBERO.libero_env_seg:LiberoEnv",
+                entry_point="gr00t.eval.sim.LIBERO_plus.libero_plus_env_seg:LiberoPlusEnvSeg",
                 kwargs={
                     "task_bddl_file": task_bddl_file,
                     "task_description": task_description,
