@@ -30,8 +30,8 @@ from gymnasium.envs.registration import register
 from libero.libero import benchmark
 
 
-os.environ.setdefault("MUJOCO_GL", "egl")
-os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
+# os.environ.setdefault("MUJOCO_GL", "egl")
+# os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
 
 from libero.libero.envs import OffScreenRenderEnv, SegmentationRenderEnv
 from libero.libero.utils import get_libero_path
@@ -276,6 +276,8 @@ if __name__ == "__main__":
         # for key in obs.keys():
         #     if 'segmentation' in key:
         #         print(f"{key}: {obs[key].shape}")
+
+        breakpoint()
 
         mask_img = env.get_segmentation_of_interest(obs['agentview_segmentation_instance'])
         mask_wrist = env.get_segmentation_of_interest(obs['robot0_eye_in_hand_segmentation_instance'])

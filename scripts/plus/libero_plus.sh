@@ -2,12 +2,28 @@
 export CUDA_VISIBLE_DEVICES=0
 # module load gcc/413.2.0
 # module load ffmpeg/7.0.2
+suite=$1
+pertube=$2
+PORT=$3
+
 
 PYTHON=gr00t/eval/sim/LIBERO_plus/libero_plus_uv/.venv/bin/python
 
-CATEGORY="Background Textures"
+
+if [ "$pertube" == "background" ]; then
+    CATEGORY="Background Textures"
+elif [ "$pertube" == "noise" ]; then
+    CATEGORY="Sensor Noise"
+elif [ "$pertube" == "robot_init_state" ]; then
+    CATEGORY="Robot Initial States"
+elif [ "$pertube" == "light" ]; then
+    CATEGORY="Light Conditions"
+else
+    echo "pertube $pertube does not belong to one of the allowed values"
+    exit 1
+fi
 # Suites to pull from; leave empty to take every suite in task_classification.json.
-SUITES=(libero_10)
+SUITES=($suite)
 
 mapfile -t TASKS < <("$PYTHON" scripts/plus/list_tasks.py "$CATEGORY" "${SUITES[@]}") || exit 1
 
@@ -22,7 +38,8 @@ action_horizon=8
 EPISODES=1
 N_envs=1
 max_episode_steps=720
-PORT=$1
+
+
 
 tt_update=0
 num_step_tt_in_traj=0
@@ -30,7 +47,7 @@ num_step_tt_in_traj=0
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
 
-    LOG_DIR="eval_logs/libero_plus/background/sen_20k_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
+    LOG_DIR="eval_logs/libero_plus/${pertube}/${suite}/sen_20k_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
     VIDEO_DIR="$LOG_DIR/videos"
     mkdir -p "$LOG_DIR"
     mkdir -p "$VIDEO_DIR"
@@ -50,6 +67,7 @@ for TASK in "${TASKS[@]}"; do
         --n_action_steps $action_horizon \
         --n_envs $N_envs \
         > "$LOG_DIR/${NAME}.txt" 2>&1
+
 
     # gr00t/eval/sim/LIBERO/libero_uv/.venv/bin/python gr00t/eval/rollout_policy.py \
     #     --algo cam \

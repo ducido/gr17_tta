@@ -39,7 +39,7 @@ def main():
 
     if results:
         mean = sum(results.values()) / len(results)
-        print(f"mean,{mean:.4f}")
+        print(f"length, {len(results)}, mean,{mean:.4f}")
 
     if missing:
         print(f"\nWARNING: no success rate found for {len(missing)} task(s):")
