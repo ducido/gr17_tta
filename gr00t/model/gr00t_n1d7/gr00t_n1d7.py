@@ -306,11 +306,8 @@ class Gr00tN1d7ActionHead(nn.Module):
         new_ooi_inputs = process_ooi(ooi_inputs)
 
         def cal_loss(current_behavior, target_behavior):
-            # current_behavior: (1, 149)
-            # target_behavior: (1, 128)
-            image_mask = input_ids == 151655 
-
-            current_behavior = current_behavior[image_mask].view(target_behavior.shape[0], -1)
+            # current_behavior: (B, n) masked image tokens for a single view
+            # target_behavior: (B, n) e.g. (B, 64)
             assert current_behavior.shape == target_behavior.shape, f"Shape mismatch: {current_behavior.shape} vs {target_behavior.shape}"
 
             pred = current_behavior.clamp_min(1e-8)
@@ -319,15 +316,28 @@ class Gr00tN1d7ActionHead(nn.Module):
             target = target / (target.sum(dim=-1, keepdim=True) + 1e-8)
             loss = torch.nn.functional.kl_div(pred.log(), target, reduction="batchmean")
             return loss
-        
-        image_ooi = new_ooi_inputs['image_ooi'] # (B,64)
-        wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'] # (B,64)
-        target_behavior = torch.cat([image_ooi, wrist_image_ooi], dim=-1).to(dtype=token_importance.dtype, device=token_importance.device) # (1,128)
-        ti_loss = cal_loss(token_importance, target_behavior)
-        sen_loss = cal_loss(sensitivity, target_behavior)
+
+        image_ooi = new_ooi_inputs['image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,64)
+        wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,64)
+        n_image = image_ooi.shape[-1]
+
+        image_mask = input_ids == 151655
+
+        def split_views(behavior):
+            # behavior: (B, seq_len) -> (B, n_image) image view, (B, n_wrist) wrist view
+            behavior = behavior[image_mask].view(image_ooi.shape[0], -1)
+            assert behavior.shape[-1] == 128
+            return behavior[:, :n_image], behavior[:, n_image:]
+
+        ti_image, ti_wrist = split_views(token_importance)
+        sen_image, sen_wrist = split_views(sensitivity)
+
+        # Optimize each view independently (separate normalization + KL per view)
+        ti_loss = cal_loss(ti_image, image_ooi) + cal_loss(ti_wrist, wrist_image_ooi)
+        sen_loss = cal_loss(sen_image, image_ooi) + cal_loss(sen_wrist, wrist_image_ooi)
 
         return {
-            "loss": loss + ti_loss + sen_loss,
+            "loss": loss + sen_loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
