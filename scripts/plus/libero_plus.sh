@@ -18,6 +18,8 @@ elif [ "$pertube" == "robot_init_state" ]; then
     CATEGORY="Robot Initial States"
 elif [ "$pertube" == "light" ]; then
     CATEGORY="Light Conditions"
+elif [ "$pertube" == "language" ]; then
+    CATEGORY="Language Instructions"
 else
     echo "pertube $pertube does not belong to one of the allowed values"
     exit 1

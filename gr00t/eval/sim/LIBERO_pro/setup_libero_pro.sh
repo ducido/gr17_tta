@@ -5,9 +5,9 @@ export PYOPENGL_PLATFORM=osmesa
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Set paths relative to script location
-LIBERO_REPO="$SCRIPT_DIR/../../../../external_dependencies/LIBERO-plus"
+LIBERO_REPO="$SCRIPT_DIR/../../../../external_dependencies/LIBERO-PRO"
 PROJECT_REPO="$SCRIPT_DIR/../../../.."
-LIBERO_UV_ENV="$SCRIPT_DIR/libero_plus_uv"
+LIBERO_UV_ENV="$SCRIPT_DIR/libero_pro_uv"
 
 # git submodule update --init $LIBERO_REPO
 
@@ -23,20 +23,17 @@ uv pip install --editable $PROJECT_REPO --no-deps
 uv pip install torch==2.5.1 torchvision==0.20.1 pydantic av tianshou==0.5.1 tyro pandas dm_tree einops==0.8.1 albumentations==1.4.18 zmq
 uv pip install transformers==4.57.3 msgpack==1.1.0 msgpack-numpy==0.4.8 gymnasium==0.29.1
 uv pip install numpy==1.26.4
-uv pip install --requirements $LIBERO_REPO/extra_requirements.txt
 
 uv pip install --editable "$PROJECT_REPO" --no-deps
-uv pip install mujoco==3.2.2
 
 rm -rf $HOME/.libero
-
-printf 'n\n' | python -c "from gr00t.eval.sim.LIBERO_plus.libero_plus_env import register_libero_plus_envs"
+printf 'n\n' | python -c "from gr00t.eval.sim.LIBERO_pro.libero_pro_env import register_libero_pro_envs"
 python - <<'PY'
 import os
 os.environ.setdefault("MUJOCO_GL", "egl")
-# os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
-from gr00t.eval.sim.LIBERO_plus.libero_plus_env import register_libero_plus_envs
-register_libero_plus_envs()
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+from gr00t.eval.sim.LIBERO_pro.libero_pro_env import register_libero_pro_envs
+register_libero_envs()
 import gymnasium as gym
 env = gym.make("libero_sim/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate")
 env.reset()
@@ -45,4 +42,5 @@ print("Env OK:", type(env))
 PY
 
 #final_info -> 2.9.1 -> final_info
-# source gr00t/eval/sim/LIBERO_plus/libero_plus_uv/.venv/bin/activate
+
+# source gr00t/eval/sim/LIBERO_pro/libero_pro_uv/.venv/bin/activate
