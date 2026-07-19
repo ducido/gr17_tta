@@ -29,7 +29,7 @@ num_step_tt_in_traj=0
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
 
-    LOG_DIR="eval_logs/libero_10/senti_alpha1.0_beta6.0_20k_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
+    LOG_DIR="eval_logs/libero_10/sen_independent_20k_tt_update${tt_update}_num_step_tt_in_traj${num_step_tt_in_traj}_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
     VIDEO_DIR="$LOG_DIR/videos"
     mkdir -p "$LOG_DIR"
     mkdir -p "$VIDEO_DIR"

@@ -369,7 +369,6 @@ def build_compare_frame(
 
     return frame
 
-
 def save_cam_video(ep_cam_data, save_dir, episode_id):
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -378,15 +377,24 @@ def save_cam_video(ep_cam_data, save_dir, episode_id):
 
     num_denoise_steps = len(ep_cam_data[0]["cam_data"])
 
+    # Hardcoded switch: if True only log the last denoise step, else log all steps.
+    only_last_denoise_step = True
+
+    last_denoise_step = ep_cam_data[0]["cam_data"][-1]["denoise_step"]
+
     compare_writers = {}
 
     fps = 4
 
     for denoise_step in range(num_denoise_steps):
+
+        if only_last_denoise_step and denoise_step != last_denoise_step:
+            continue
+
         compare_path = save_dir / f"episode_{episode_id:04d}_compare_denoise_{denoise_step}.mp4"
         if compare_path.exists():
             compare_path.unlink()
-        
+
         compare_writers[denoise_step] = imageio.get_writer(str(compare_path), fps=fps, codec="libx264", format="FFMPEG")
     try:
         for env_step, step_data in enumerate(ep_cam_data):
@@ -418,6 +426,9 @@ def save_cam_video(ep_cam_data, save_dir, episode_id):
 
             for denoise_data in cam_data:
                 denoise_step = denoise_data["denoise_step"]
+
+                if denoise_step not in compare_writers:
+                    continue
 
                 frame = build_compare_frame(
                     denoise_data["sensitivity"],
