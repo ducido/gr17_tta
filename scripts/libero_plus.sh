@@ -16,6 +16,15 @@ elif [ "$pertube" == "noise" ]; then
     CATEGORY="Sensor Noise"
 elif [ "$pertube" == "robot_init_state" ]; then
     CATEGORY="Robot Initial States"
+elif [ "$pertube" == "language" ]; then
+    CATEGORY="Language Instructions"
+elif [ "$pertube" == "camera_view" ]; then
+    CATEGORY="Camera Viewpoints"
+elif [ "$pertube" == "layout" ]; then
+    CATEGORY="Objects Layout"
+else
+    echo "pertube $pertube does not belong to one of the allowed values"
+    exit 1
 fi
 # Suites to pull from; leave empty to take every suite in task_classification.json.
 SUITES=($suite)
@@ -38,7 +47,7 @@ max_episode_steps=720
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
 
-    LOG_DIR="eval_logs/libero_plus/${pertube}${suite}/baseline_20k_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
+    LOG_DIR="eval_logs/libero_plus/${pertube}/${suite}/baseline_20k_${max_episode_steps}steps_eps${EPISODES}_ah${action_horizon}/$NAME"
     VIDEO_DIR="$LOG_DIR/videos"
     mkdir -p "$LOG_DIR"
     mkdir -p "$VIDEO_DIR"
@@ -53,7 +62,7 @@ for TASK in "${TASKS[@]}"; do
         --env_name "$TASK" \
         --n_action_steps $action_horizon \
         --n_envs $N_envs \
-        --video_dir "$VIDEO_DIR" \
+        --video_dir "$VIDEO_DIR"  \
         > "$LOG_DIR/${NAME}.txt" 2>&1
 
     # gr00t/eval/sim/LIBERO/libero_uv/.venv/bin/python gr00t/eval/rollout_policy.py \

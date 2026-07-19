@@ -63,7 +63,7 @@ fi
 action_horizon=8
 EPISODES=20
 N_envs=1
-PORT=$1
+PORT=$2
 
 for TASK in "${TASKS[@]}"; do
     NAME=$(basename "$TASK")
