@@ -190,7 +190,13 @@ class Gr00tN1d7ActionHead(nn.Module):
         # Set frozen modules to eval
         self.set_frozen_modules_to_eval_mode()
 
-        backbone_output = self.process_backbone_output(backbone_output)
+        # The vlln + vl_self_attention adapter is on the path from the vision patch
+        # embeddings to the action, and the OOI loss double-backprops through it. Force
+        # the MATH SDPA backend so its attention is twice-differentiable (BasicTransformer
+        # only auto-forces MATH on Spark hardware; elsewhere it would pick flash / mem-
+        # efficient, which have no second derivative).
+        with sdpa_kernel(SDPBackend.MATH):
+            backbone_output = self.process_backbone_output(backbone_output)
 
         # Get vision and language embeddings.
         vl_embeds = backbone_output.backbone_features
@@ -274,17 +280,26 @@ class Gr00tN1d7ActionHead(nn.Module):
         loss = action_loss
 
         ######### Compute ooi loss
+        # Differentiate the action w.r.t. the RAW vision patch embeddings (the input to
+        # the first ViT transformer block, before any attention mixing). Unlike vl_embeds
+        # (post-ViT, post-LLM, post-adapter), each of these tokens still maps 1:1 to a
+        # spatial image patch, so the gradient is a faithful spatial saliency map over the
+        # image. Shape: (total_patches, vit_hidden), flattened over batch and both views.
+        vision_patch_embeds = backbone_output["vision_patch_embeds"]
+        assert vision_patch_embeds is not None, (
+            "vision_patch_embeds is None; the backbone must run in training mode with grad "
+            "enabled for the OOI sensitivity loss (see Qwen3Backbone._capture_vision_patch_hook)."
+        )
         target = (pred_actions * action_mask).norm()
         grads = torch.autograd.grad(
             outputs=target,
-            inputs=vl_embeds, # torch.Size([160, 156, 2048])
+            inputs=vision_patch_embeds,  # (total_patches, vit_hidden)
             retain_graph=True,
             create_graph=True,
-        )[0] # torch.Size([160, 156, 2048])
-        # print(grads)
-        
-        sensitivity = grads.norm(dim=-1) # (B, 156)
-        token_importance = torch.relu((grads * vl_embeds).sum(-1)) # (B, 156)
+        )[0]  # (total_patches, vit_hidden)
+
+        sensitivity = grads.norm(dim=-1)  # (total_patches,)
+        token_importance = torch.relu((grads * vision_patch_embeds).sum(-1))  # (total_patches,)
 
         def process_ooi(ooi_inputs):
             new_ooi_inputs = {}
@@ -319,18 +334,66 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         image_ooi = new_ooi_inputs['image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,64)
         wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,64)
-        n_image = image_ooi.shape[-1]
-
-        image_mask = input_ids == 151655
+        B = image_ooi.shape[0]
+        n_image = image_ooi.shape[-1]  # merged tokens per view (8x8 = 64)
+        n_merged = 2 * n_image  # image + wrist views -> 128 merged tokens per sample
 
         def split_views(behavior):
-            # behavior: (B, seq_len) -> (B, n_image) image view, (B, n_wrist) wrist view
-            behavior = behavior[image_mask].view(image_ooi.shape[0], -1)
-            assert behavior.shape[-1] == 128
-            return behavior[:, :n_image], behavior[:, n_image:]
+            # behavior: (total_patches,) per-patch signal, flattened over batch and views.
+            # Qwen3-VL patches are block-major: every `merge_unit` (= spatial_merge_size**2,
+            # i.e. a 2x2 spatial block = 4) consecutive patches merge into one LLM token,
+            # ordered [sample][view][merged_token][intra_block]. Pool the 4 patches of each
+            # block to recover per-merged-token importance aligned with the 8x8 OOI grid.
+            per_sample = behavior.shape[0] // B
+            assert per_sample % n_merged == 0, (
+                f"{per_sample} patches/sample not divisible by {n_merged} merged tokens"
+            )
+            merge_unit = per_sample // n_merged  # 4 for spatial_merge_size=2
+            tok = behavior.view(B, n_merged, merge_unit).sum(dim=-1)  # (B, 128)
+            # First n_image merged tokens = main image view, remainder = wrist view.
+            return tok[:, :n_image], tok[:, n_image:]
 
         ti_image, ti_wrist = split_views(token_importance)
         sen_image, sen_wrist = split_views(sensitivity)
+
+        # ---- One-shot debug: verify the patch-embedding gradient wiring is correct ----
+        # Prints only on the first forward (and only rank 0) to avoid flooding logs.
+        # _rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        # if _rank == 0 and not getattr(self, "_ooi_dbg_printed", False):
+        #     self._ooi_dbg_printed = True
+        #     _per_sample = vision_patch_embeds.shape[0] // B
+        #     _merge_unit = _per_sample // n_merged
+        #     print("\n" + "=" * 70)
+        #     print("[OOI DEBUG] patch-embedding sensitivity wiring")
+        #     print("=" * 70)
+        #     print(f"  vision_patch_embeds : shape={tuple(vision_patch_embeds.shape)} "
+        #           f"dtype={vision_patch_embeds.dtype} requires_grad={vision_patch_embeds.requires_grad} "
+        #           f"is_leaf={vision_patch_embeds.is_leaf}")
+        #     print(f"  grads               : shape={tuple(grads.shape)} "
+        #           f"any_nan={torch.isnan(grads).any().item()} "
+        #           f"all_zero={(grads == 0).all().item()} "
+        #           f"abs_mean={grads.float().abs().mean().item():.3e}")
+        #     print(f"  B (batch)           : {B}")
+        #     print(f"  patches per sample  : {_per_sample}   (expect n_views*grid_h*grid_w = 2*16*16 = 512)")
+        #     print(f"  n_merged tokens     : {n_merged}   (expect 2 views * {n_image} = 128)")
+        #     print(f"  merge_unit          : {_merge_unit}   (expect spatial_merge_size**2 = 4)")
+        #     print(f"  total_patches       : {vision_patch_embeds.shape[0]}   (expect B*512 = {B * 512})")
+        #     print(f"  sensitivity (patch) : shape={tuple(sensitivity.shape)}")
+        #     print(f"  ti_image / ti_wrist : {tuple(ti_image.shape)} / {tuple(ti_wrist.shape)}  (expect (B,{n_image}))")
+        #     print(f"  sen_image/sen_wrist : {tuple(sen_image.shape)} / {tuple(sen_wrist.shape)}  (expect (B,{n_image}))")
+        #     print(f"  image_ooi           : shape={tuple(image_ooi.shape)}  wrist_image_ooi={tuple(wrist_image_ooi.shape)}")
+        #     # A non-zero, non-nan grad with is_leaf=True and matching shapes ==> wiring OK.
+        #     _ok = (
+        #         vision_patch_embeds.requires_grad
+        #         and vision_patch_embeds.is_leaf
+        #         and not torch.isnan(grads).any().item()
+        #         and not (grads == 0).all().item()
+        #         and _merge_unit == 4
+        #         and ti_image.shape == image_ooi.shape
+        #     )
+        #     print(f"  >>> WIRING {'OK' if _ok else 'SUSPECT — check the values above'}")
+        #     print("=" * 70 + "\n")
+        # ---- end debug ----
 
         # Optimize each view independently (separate normalization + KL per view)
         ti_loss = cal_loss(ti_image, image_ooi) + cal_loss(ti_wrist, wrist_image_ooi)
