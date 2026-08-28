@@ -306,13 +306,13 @@ def overlay_heatmap(rgb, heatmap, alpha=0.35, overlay=True):
 
 
 def extract_two_view_heatmaps(token_scores, input_ids, output_size=(256, 256)):
-    image_mask = input_ids == IMAGE_TOKEN_ID
+    # image_mask = input_ids == IMAGE_TOKEN_ID
 
-    image_scores = token_scores[image_mask]
+    # image_scores = token_scores[image_mask]
 
-    num_img_tokens = len(image_scores)
+    num_img_tokens = len(token_scores)
 
-    assert num_img_tokens == 128, f"No image token found for IMAGE_TOKEN_ID={IMAGE_TOKEN_ID}"
+    assert num_img_tokens == 512, f"Should be 512, got {num_img_tokens}"
     assert num_img_tokens % 2 == 0, f"Expected even image token count, got {num_img_tokens}"
 
     tokens_per_view = num_img_tokens // 2
@@ -320,8 +320,8 @@ def extract_two_view_heatmaps(token_scores, input_ids, output_size=(256, 256)):
 
     assert grid_size * grid_size == tokens_per_view, f"tokens_per_view={tokens_per_view} is not square"
 
-    front = image_scores[:tokens_per_view].reshape(grid_size, grid_size)
-    wrist = image_scores[tokens_per_view:].reshape(grid_size, grid_size)
+    front = token_scores[:tokens_per_view].reshape(grid_size, grid_size)
+    wrist = token_scores[tokens_per_view:].reshape(grid_size, grid_size)
 
     front = resize_nearest(_normalize(front), output_size)
     wrist = resize_nearest(_normalize(wrist), output_size)
@@ -572,6 +572,23 @@ def run_rollout_gymnasium_policy(
             'tt_update': args.tt_update,
             'num_step_tt_in_traj': num_step_tt_in_traj
         }
+
+        # debug_dir = Path("/pfss/mlde/workspaces/mlde_wsp_MGPATH/VLA/gr17_tta/debug")
+        # debug_dir.mkdir(parents=True, exist_ok=True)
+        # for env_idx in range(n_envs):
+        #     debug_image = np.asarray(observations["video.image"][env_idx])
+        #     debug_wrist_image_ooi = np.asarray(observations["video.wrist_image_ooi"][env_idx])
+        #     while debug_image.ndim > 3:
+        #         debug_image = debug_image[0]
+        #     while debug_wrist_image_ooi.ndim > 3:
+        #         debug_wrist_image_ooi = debug_wrist_image_ooi[0]
+        #     Image.fromarray(debug_image.astype(np.uint8)).save(
+        #         debug_dir / f"step{i:04d}_env{env_idx}_image.png"
+        #     )
+        #     Image.fromarray(debug_wrist_image_ooi.astype(np.uint8)).save(
+        #         debug_dir / f"step{i:04d}_env{env_idx}_wrist_image_ooi.png"
+        #     )
+
         actions, info = policy.get_action(observations, options=options)
         # cam_data = info['cam_data']
         # len(cam_data) = 4

@@ -4,6 +4,8 @@ import copy
 
 import numpy as np
 import torch
+from PIL import Image
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from gr00t.policy.gr00t_policy import *
 from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7
 from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7ActionHead
@@ -131,8 +133,14 @@ class Gr00tN1d7_CAM(Gr00tN1d7):
 
         backbone_inputs, action_inputs = self.prepare_input(inputs)
 
-        # Forward through backbone
-        backbone_outputs = self.backbone(backbone_inputs)
+        # Grad-CAM differentiates the action w.r.t. the raw vision patch embeddings, which
+        # are captured inside the (frozen, eval-mode) backbone. Enable the capture here so
+        # the pre-hook fires at inference too, and make sure grad is enabled so the graph
+        # from patch embeddings -> backbone_features survives (do NOT wrap in no_grad /
+        # inference_mode).
+        self.backbone._force_capture_vision_patch = True
+        with torch.enable_grad():
+            backbone_outputs = self.backbone(backbone_inputs)
 
         action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, ooi_inputs=ooi_inputs, input_ids=backbone_inputs['input_ids'], options=options)
         
@@ -181,8 +189,16 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
         input_ids: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
     ):
+        # Keep vl_embeds CONNECTED to the vision patch embeddings (do not detach / re-leaf),
+        # so the action gradient can flow all the way back to the raw, spatially-localized
+        # patch tokens. The differentiable leaf itself is the first-ViT-block input captured
+        # by the backbone hook.
         vl_embeds = backbone_features
-        vl_embeds.requires_grad_(True)
+        vision_patch_embeds = backbone_output["vision_patch_embeds"]
+        assert vision_patch_embeds is not None, (
+            "vision_patch_embeds is None; set backbone._force_capture_vision_patch=True and "
+            "run the backbone with grad enabled before Grad-CAM (see Gr00tN1d7_CAM.get_action)."
+        )
 
         batch_size = backbone_features.shape[0]
         device = backbone_features.device
@@ -249,64 +265,71 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             # Join vision, language, state and action embedding along sequence dimension.
             sa_embs = torch.cat((state_features, action_features), dim=1)
 
-            # Run model forward.
-            if self.config.use_alternate_vl_dit:
-                model_output = self.model(
-                    hidden_states=sa_embs,
-                    encoder_hidden_states=vl_embeds,
-                    timestep=timesteps_tensor,
-                    image_mask=backbone_output.image_mask,
-                    backbone_attention_mask=backbone_output.backbone_attention_mask,
-                )
-            else:
-                model_output = self.model(
-                    hidden_states=sa_embs,
-                    encoder_hidden_states=vl_embeds,
-                    timestep=timesteps_tensor,
-                )
+            # Run model forward. Force the MATH SDPA backend: the Grad-CAM grad uses
+            # create_graph=True and (in the steering branch) is backpropped through, which
+            # needs double-backward through the DiT attention. flash / mem-efficient have
+            # no second derivative.
+            with sdpa_kernel(SDPBackend.MATH):
+                if self.config.use_alternate_vl_dit:
+                    model_output = self.model(
+                        hidden_states=sa_embs,
+                        encoder_hidden_states=vl_embeds,
+                        timestep=timesteps_tensor,
+                        image_mask=backbone_output.image_mask,
+                        backbone_attention_mask=backbone_output.backbone_attention_mask,
+                    )
+                else:
+                    model_output = self.model(
+                        hidden_states=sa_embs,
+                        encoder_hidden_states=vl_embeds,
+                        timestep=timesteps_tensor,
+                    )
             pred = self.action_decoder(model_output, embodiment_id)
 
             pred_velocity = pred[:, -self.action_horizon :]
 
-            # Grad-CAM
+            # Grad-CAM: differentiate the action w.r.t. the RAW vision patch embeddings
+            # (before any ViT block), so each unit maps 1:1 to a spatial image patch.
             action_mask = action_input.action_mask
             target = (pred_velocity * action_mask).norm()
             grads = torch.autograd.grad(
                 outputs=target,
-                inputs=vl_embeds, # torch.Size([160, 156, 2048])
+                inputs=vision_patch_embeds,  # (total_patches, vit_hidden)
                 retain_graph=True,
                 create_graph=True,
-            )[0] # torch.Size([160, 156, 2048])
-            # print(grads)
-            
-            sensitivity = grads.norm(dim=-1) # (160, 156)
-            token_importance = torch.relu((grads * vl_embeds).sum(-1)) # (B, 156)
+            )[0]  # (total_patches, vit_hidden)
+
+            sensitivity = grads.norm(dim=-1)  # (total_patches,)
+            token_importance = torch.relu((grads * vision_patch_embeds).sum(-1))  # (total_patches,)
 
             def process_ooi(ooi_inputs):
                 new_ooi_inputs = {}
                 for k, v in ooi_inputs.items():
-                    v = v.squeeze(dim=1)[...,0] # B,256,256
+                    # v = v.squeeze()[...,0] # B,256,256
+                    v = v.squeeze(dim=1)[...,0]
 
-                    # #### for visualize to debug
-                    # vis_v = v.detach().cpu().numpy()
+                    v = 1-v # don't know why eval they reverse it so we have to reverse back
+
+                    #### for visualize to debug
+                    # debug_dir = Path("/pfss/mlde/workspaces/mlde_wsp_MGPATH/VLA/gr17_tta/debug")
+                    # debug_dir.mkdir(parents=True, exist_ok=True)
+                    # vis_v = v.detach().cpu().numpy().astype(np.uint8)
                     # for i in range(vis_v.shape[0]):
                     #     vis_im = Image.fromarray(vis_v[i])
-                    #     vis_im.save(f"/pfss/mlde/workspaces/mlde_wsp_IAS_SAMMerge/VLA/duc/gr17_tta/debug/debug_{k}_{i}.png")
-                    # ####
-                    
+                    #     vis_im.save(debug_dir / f"debug_{k}_{i}.png")
+                    ####
+
                     v = v.unsqueeze(dim=1).float() / 255.0
-                    v = torch.nn.functional.adaptive_avg_pool2d(v, (8, 8))
+                    v = torch.nn.functional.adaptive_avg_pool2d(v, (16, 16))
                     new_ooi_inputs[k] = v.view(v.shape[0], -1)
                 return new_ooi_inputs
+
 
             new_ooi_inputs = process_ooi(ooi_inputs)
 
             def cal_loss(current_behavior, target_behavior):
-                # current_behavior: (1, 149)
-                # target_behavior: (1, 128)
-                image_mask = input_ids == 151655 
-
-                current_behavior = current_behavior[image_mask].view(target_behavior.shape[0], -1)
+                # current_behavior: (B, n) masked image tokens for a single view
+                # target_behavior: (B, n) e.g. (B, 64)
                 assert current_behavior.shape == target_behavior.shape, f"Shape mismatch: {current_behavior.shape} vs {target_behavior.shape}"
 
                 pred = current_behavior.clamp_min(1e-8)
@@ -315,13 +338,19 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
                 target = target / (target.sum(dim=-1, keepdim=True) + 1e-8)
                 loss = torch.nn.functional.kl_div(pred.log(), target, reduction="batchmean")
                 return loss
-            
-            image_ooi = new_ooi_inputs['image_ooi'] # (B,64)
-            wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'] # (B,64)
-            target_behavior = torch.cat([image_ooi, wrist_image_ooi], dim=-1).to(dtype=token_importance.dtype, device=token_importance.device) # (1,128)
 
-            ti_loss = cal_loss(token_importance, target_behavior)
+            image_ooi = new_ooi_inputs['image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,256)
+            wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,256)
+            merged_ooi = torch.cat([image_ooi, wrist_image_ooi], dim=-1)
+
+            # Optimize each view independently (separate normalization + KL per view)
+            token_importance = token_importance.view(merged_ooi.shape[0], merged_ooi.shape[1])
+            sensitivity = sensitivity.view(merged_ooi.shape[0], merged_ooi.shape[1])
+            ti_loss = cal_loss(token_importance, merged_ooi)
+            sen_loss = cal_loss(sensitivity, merged_ooi)
+            
             total_loss = ti_loss
+
 
             # sensitivity, token_importance = create_dummy_heatmaps(
             #     input_ids=input_ids,
@@ -339,10 +368,10 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
                 "t_discretized": int(t_discretized),
 
                 # [149]
-                "sensitivity": sensitivity[0].detach().cpu().float().numpy(),
+                "sensitivity": merged_ooi[0].detach().cpu().float().numpy(),
 
                 # [149]
-                "token_importance": token_importance[0].detach().cpu().float().numpy(),
+                "token_importance": merged_ooi[0].detach().cpu().float().numpy(),
 
                 # optional
                 "pred_velocity": pred_velocity[0].detach().cpu().float().numpy(),
@@ -382,10 +411,13 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             dtype=backbone_features.dtype,
             device=device,
         )
+        # NOTE: backbone_features stays CONNECTED (not detached) to the vision patch
+        # embeddings, so grad(action, patch_embeds) can flow through the frozen ViT+LLM.
+        # Only actions / state_features are detached (they are not grad targets).
         if options['num_step_tt_in_traj'] <= 0:
             total_loss, actions, vl_embeds, state_features, all_cam_data = self.denoising_step(
                 actions.detach(),
-                backbone_features.detach(),
+                backbone_features,
                 state_features.detach(),
                 embodiment_id,
                 backbone_output,
@@ -399,7 +431,7 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
             for i in range(options['tt_update']):
                 total_loss, actions, vl_embeds, state_features, all_cam_data = self.denoising_step(
                     actions.detach(),
-                    backbone_features.detach(),
+                    backbone_features,
                     state_features.detach(),
                     embodiment_id,
                     backbone_output,
@@ -411,7 +443,9 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
                 total_loss = total_loss.mean()
                 print(f"Step {i}: loss = {total_loss.item()}")
                 self.steering_optimizer.zero_grad()
-                total_loss.backward()
+                # retain_graph: the frozen backbone graph (patch_embeds -> backbone_features)
+                # is shared across steering iterations and must survive each backward.
+                total_loss.backward(retain_graph=True)
                 self.steering_optimizer.step()
                 # for n, p in self.model.named_parameters():
                 #     if p.grad is not None:
@@ -450,7 +484,11 @@ class Gr00tN1d7_CAM_ActionHead(Gr00tN1d7ActionHead):
                 - action_pred: [B, action_horizon, action_dim] predicted actions
         """
 
-        features = self._encode_features(backbone_output, action_input)
+        # process_backbone_output (vlln + vl_self_attention) inside _encode_features is on
+        # the patch-embed -> action path; force MATH SDPA so its attention is twice-
+        # differentiable for the Grad-CAM / steering double-backward.
+        with sdpa_kernel(SDPBackend.MATH):
+            features = self._encode_features(backbone_output, action_input)
         return self.get_action_with_features(
             backbone_features=features.backbone_features,
             state_features=features.state_features,

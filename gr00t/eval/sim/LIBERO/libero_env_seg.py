@@ -277,10 +277,9 @@ if __name__ == "__main__":
         #     if 'segmentation' in key:
         #         print(f"{key}: {obs[key].shape}")
 
-        breakpoint()
 
-        mask_img = env.get_segmentation_of_interest(obs['agentview_segmentation_instance'])
-        mask_wrist = env.get_segmentation_of_interest(obs['robot0_eye_in_hand_segmentation_instance'])
+        mask_img = env.get_segmentation_of_interest(obs['agentview_segmentation_instance'][::-1, ::-1],)
+        mask_wrist = env.get_segmentation_of_interest(obs['robot0_eye_in_hand_segmentation_instance'][::-1, ::-1],)
         # mask_img[mask_img == -1] = 0
         # mask_wrist[mask_wrist == -1] = 0
 

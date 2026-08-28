@@ -98,6 +98,10 @@ class Qwen3Backbone(torch.nn.Module):
         # positional embed) as a differentiable leaf so we can compute the gradient of
         # the predicted action w.r.t. each raw, spatially-localized vision patch.
         self._vision_patch_embeds = None
+        # When True, the patch capture + MATH backend also run outside training mode
+        # (e.g. Grad-CAM / test-time steering at inference). Defaults off so plain
+        # inference is unaffected.
+        self._force_capture_vision_patch = False
         self.model.visual.blocks[0].register_forward_pre_hook(self._capture_vision_patch_hook)
 
         if load_bf16 and trainable_params_fp32:
@@ -154,7 +158,7 @@ class Qwen3Backbone(torch.nn.Module):
         Only active during training (grad is needed); a no-op otherwise so inference is
         unaffected.
         """
-        if not self.training or not torch.is_grad_enabled():
+        if not torch.is_grad_enabled() or not (self.training or self._force_capture_vision_patch):
             return None
         hidden_states = args[0]
         leaf = hidden_states.detach().requires_grad_(True)
@@ -180,7 +184,7 @@ class Qwen3Backbone(torch.nn.Module):
         vl_input = {k: vl_input[k] for k in keys_to_use}
 
         self._vision_patch_embeds = None
-        if self.training and torch.is_grad_enabled():
+        if (self.training or self._force_capture_vision_patch) and torch.is_grad_enabled():
             # The OOI loss differentiates action -> vision patch embeddings with
             # create_graph=True, so every attention op on that path (whole ViT + LLM)
             # must be twice-differentiable. Force the MATH SDPA backend here (the sdpa

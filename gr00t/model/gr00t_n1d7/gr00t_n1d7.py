@@ -301,22 +301,24 @@ class Gr00tN1d7ActionHead(nn.Module):
         sensitivity = grads.norm(dim=-1)  # (total_patches,)
         token_importance = torch.relu((grads * vision_patch_embeds).sum(-1))  # (total_patches,)
 
+
         def process_ooi(ooi_inputs):
             new_ooi_inputs = {}
             for k, v in ooi_inputs.items():
                 v = v.squeeze()[...,0] # B,256,256
 
-                # #### for visualize to debug
-                # vis_v = v.detach().cpu().numpy()
-                # for i in range(vis_v.shape[0]):
-                #     vis_im = Image.fromarray(vis_v[i])
-                #     vis_im.save(f"/pfss/mlde/workspaces/mlde_wsp_IAS_SAMMerge/VLA/duc/gr17_tta/debug/debug_{k}_{i}.png")
-                # ####
+                #### for visualize to debug
+                vis_v = v.detach().cpu().numpy()
+                for i in range(vis_v.shape[0]):
+                    vis_im = Image.fromarray(vis_v[i])
+                    vis_im.save(f"/pfss/mlde/workspaces/mlde_wsp_MGPATH/VLA/gr17_tta/debug/training_debug_{k}_{i}.png")
+                ####
                 
                 v = v.unsqueeze(dim=1).float() / 255.0
-                v = torch.nn.functional.adaptive_avg_pool2d(v, (8, 8))
+                v = torch.nn.functional.adaptive_avg_pool2d(v, (16, 16))
                 new_ooi_inputs[k] = v.view(v.shape[0], -1)
             return new_ooi_inputs
+
 
         new_ooi_inputs = process_ooi(ooi_inputs)
 
@@ -332,29 +334,15 @@ class Gr00tN1d7ActionHead(nn.Module):
             loss = torch.nn.functional.kl_div(pred.log(), target, reduction="batchmean")
             return loss
 
-        image_ooi = new_ooi_inputs['image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,64)
-        wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,64)
-        B = image_ooi.shape[0]
-        n_image = image_ooi.shape[-1]  # merged tokens per view (8x8 = 64)
-        n_merged = 2 * n_image  # image + wrist views -> 128 merged tokens per sample
+        image_ooi = new_ooi_inputs['image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,256)
+        wrist_image_ooi = new_ooi_inputs['wrist_image_ooi'].to(dtype=token_importance.dtype, device=token_importance.device) # (B,256)
+        merged_ooi = torch.cat([image_ooi, wrist_image_ooi], dim=-1)
 
-        def split_views(behavior):
-            # behavior: (total_patches,) per-patch signal, flattened over batch and views.
-            # Qwen3-VL patches are block-major: every `merge_unit` (= spatial_merge_size**2,
-            # i.e. a 2x2 spatial block = 4) consecutive patches merge into one LLM token,
-            # ordered [sample][view][merged_token][intra_block]. Pool the 4 patches of each
-            # block to recover per-merged-token importance aligned with the 8x8 OOI grid.
-            per_sample = behavior.shape[0] // B
-            assert per_sample % n_merged == 0, (
-                f"{per_sample} patches/sample not divisible by {n_merged} merged tokens"
-            )
-            merge_unit = per_sample // n_merged  # 4 for spatial_merge_size=2
-            tok = behavior.view(B, n_merged, merge_unit).sum(dim=-1)  # (B, 128)
-            # First n_image merged tokens = main image view, remainder = wrist view.
-            return tok[:, :n_image], tok[:, n_image:]
-
-        ti_image, ti_wrist = split_views(token_importance)
-        sen_image, sen_wrist = split_views(sensitivity)
+        # Optimize each view independently (separate normalization + KL per view)
+        token_importance = token_importance.view(merged_ooi.shape[0], merged_ooi.shape[1])
+        sensitivity = sensitivity.view(merged_ooi.shape[0], merged_ooi.shape[1])
+        ti_loss = cal_loss(token_importance, merged_ooi)
+        sen_loss = cal_loss(sensitivity, merged_ooi)
 
         # ---- One-shot debug: verify the patch-embedding gradient wiring is correct ----
         # Prints only on the first forward (and only rank 0) to avoid flooding logs.
@@ -395,12 +383,9 @@ class Gr00tN1d7ActionHead(nn.Module):
         #     print("=" * 70 + "\n")
         # ---- end debug ----
 
-        # Optimize each view independently (separate normalization + KL per view)
-        ti_loss = cal_loss(ti_image, image_ooi) + cal_loss(ti_wrist, wrist_image_ooi)
-        sen_loss = cal_loss(sen_image, image_ooi) + cal_loss(sen_wrist, wrist_image_ooi)
 
         return {
-            "loss": loss + sen_loss,
+            "loss": sen_loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
@@ -673,6 +658,52 @@ class Gr00tN1d7(PreTrainedModel):
             model_type=config.backbone_model_type,
             transformers_loading_kwargs=transformers_loading_kwargs,
         )
+
+        # ---- DEBUG: print which modules are trainable vs frozen ----
+        self.debug_print_trainable_modules()
+        # ---- end debug ----
+
+    def debug_print_trainable_modules(self, max_depth: int = 3) -> None:
+        """
+        Debug utility: walk the module tree and print, for every submodule up to
+        `max_depth` levels deep, whether all/none/some of its parameters are
+        trainable (requires_grad=True). Also prints an overall trainable-param
+        summary. Only prints on rank 0 in distributed runs.
+        """
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+            return
+
+        def status(module: nn.Module) -> str:
+            params = list(module.parameters())
+            if not params:
+                return "no-params"
+            n_trainable = sum(p.requires_grad for p in params)
+            if n_trainable == 0:
+                return "FROZEN"
+            if n_trainable == len(params):
+                return "TRAINABLE"
+            return f"MIXED ({n_trainable}/{len(params)})"
+
+        def walk(module: nn.Module, prefix: str, depth: int) -> None:
+            for name, child in module.named_children():
+                full_name = f"{prefix}.{name}" if prefix else name
+                print(f"{'  ' * depth}{full_name}: {status(child)}")
+                if depth < max_depth:
+                    walk(child, full_name, depth + 1)
+
+        print("=" * 70)
+        print("[DEBUG] Trainable / frozen module summary")
+        print("=" * 70)
+        walk(self, "", 0)
+
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print("-" * 70)
+        print(
+            f"Total params: {total_params:,} | Trainable: {trainable_params:,} "
+            f"({100 * trainable_params / max(total_params, 1):.2f}%)"
+        )
+        print("=" * 70)
 
     def prepare_input(self, inputs: dict) -> Tuple[BatchFeature, BatchFeature]:
         """Prepare inputs for backbone and action head."""
