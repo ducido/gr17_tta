@@ -1,0 +1,51 @@
+# One-shot ISS + NMR configuration for one prepared X-ICM task episode.
+
+defaults:
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+  - _self_
+
+data:
+  root: /pfss/mlde/workspaces/mlde_wsp_IAS_SAMMerge/VLA/duc/gr17_tta/CP/merged_libero_mask_depth_noops_lerobot_10
+  task: close_jar
+  episode: 0
+  episode_dir: null
+  prompt: null
+  require_state: true
+
+policy:
+  checkpoint_dir: /pfss/mlde/workspaces/mlde_wsp_IAS_SAMMerge/VLA/duc/gr17_tta/outputs/20260714_085102_baseline_merged_libero_1gpus_20000steps_100bs_10000ss/checkpoint-20000
+  config_name: gr00t
+  cuda_visible_devices: ${oc.env:CUDA_VISIBLE_DEVICES,0}
+  embodiment_tag: LIBERO_PANDA
+
+output:
+  dir: outputs/vla_explain/${data.task}/${data.episode}
+
+iss:
+  batch_size: 64
+  n_masks: 500
+  p_keep: 0.3
+  grid_size: [7, 7]
+  blur_sigma: 10.0
+  time_stride: 10
+  seed: 0
+
+nmr:
+  k_percent: 10.0
+  k_pixels: 0
+  normalize: joint
+
+viz:
+  fps: 15
+  alpha: 0.6
+  snapshot_steps: null
+  top_k_percent: null
+  skip_video: false
+
+hydra:
+  output_subdir: null
+  job:
+    chdir: false
+  run:
+    dir: .
